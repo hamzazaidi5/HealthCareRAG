@@ -1,9 +1,11 @@
-langchain
+langchain~=0.3.19
 langchain-community
 langchain-core
 groq
-python-dotenv
-pandas
+python-dotenv~=1.0.1
+pandas~=2.2.3
 faiss-cpu
 langchain-openai
 langchain-groq
+
+streamlit~=1.42.2

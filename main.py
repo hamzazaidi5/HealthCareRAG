@@ -1,330 +1,188 @@
 import streamlit as st
 from utils.config import Config
-from utils.data_loader import load_csv_as_documents
 from chain.custom_chain import DrugRecommendationChain
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+
+from utils.data_loader import OncologyDataLoader
+
+# Initialize a ChatOpenAI instance for generating questions.
+question_llm = ChatOpenAI(
+    temperature=0,
+    model_name=Config.LLM_MODEL,
+    openai_api_key=Config.OPENAI_API_KEY
+)
+
+
+def generate_generic_question(stage, patient_data):
+    """
+    Generate a generic question based on the conversation stage and collected patient data.
+    """
+    if stage == 0:
+        prompt = (
+            "You are a friendly, professional medical chatbot. "
+            "Greet the user and ask for their age, gender, and any relevant health history in a concise, generic manner."
+        )
+    elif stage == 1:
+        prompt = (
+            f"The user has provided basic demographics: {patient_data.get('demographics', '')}. "
+            "Now, ask in a generic way: What type of cancer have you been diagnosed with?"
+        )
+    elif stage == 2:
+        prompt = (
+            f"The user mentioned their cancer type as: {patient_data.get('cancer_type', '')}. "
+            "Ask generically: Do you know the stage of your cancer?"
+        )
+    elif stage == 3:
+        prompt = (
+            f"The user stated the cancer stage as: {patient_data.get('cancer_stage', '')}. "
+            "Ask generically: Are there any known subtypes or genetic markers associated with your cancer (e.g., HER2, EGFR)?"
+        )
+    elif stage == 4:
+        prompt = (
+            f"The user provided subtype information: {patient_data.get('cancer_subtype', '')}. "
+            "Ask generically: What treatments have you received so far?"
+        )
+    elif stage == 5:
+        prompt = (
+            "Now that all necessary patient data has been collected, "
+            "generate a concise final query summarizing the patient data to identify the best FDA-approved drug(s) and available survival data."
+        )
+    elif stage == 6:
+        prompt = (
+            f"The user has a follow-up question: {patient_data.get('followup', '')}. "
+            "Generate a clarifying generic follow-up response that addresses this query."
+        )
+    else:
+        prompt = "Could you please provide additional details?"
+
+    response = question_llm(prompt)
+    return response.content.strip()
 
 
 def initialize_system():
-    documents = load_csv_as_documents(Config.CSV_PATH)
+    # 1) Load your CSV as Documents (entire file or limited rows based on need)
+    documents = OncologyDataLoader(Config.CSV_PATH).load_data()
 
-    # Create embeddings
+    # 2) Create embeddings using your selected model and API key.
     embeddings = OpenAIEmbeddings(
         model=Config.EMBEDDING_MODEL,
         openai_api_key=Config.OPENAI_API_KEY
     )
 
-    # Create vector store
+    # 3) Build the FAISS vector store for efficient document retrieval.
     vector_store = FAISS.from_documents(documents, embeddings)
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
-    # Return retriever for custom chain creation
-    return retriever
+    # 4) Initialize the LLM for recommendation generation.
+    llm = ChatOpenAI(
+        temperature=0,
+        model_name=Config.LLM_MODEL,
+        openai_api_key=Config.OPENAI_API_KEY
+    )
+
+    # 5) Create your custom drug recommendation chain.
+    drug_chain = DrugRecommendationChain(retriever, llm)
+    return drug_chain, llm
 
 
-# Use Streamlit caching to load the system only once
+# Cache the system initialization so that the vector store and LLM load only once.
 @st.cache_resource
 def load_system():
-    retriever = initialize_system()
-    drug_recommendation_chain = DrugRecommendationChain(retriever)
-    return drug_recommendation_chain
-
-
-def get_default_drug_for_cancer(cancer_type):
-    """Return default drugs to query based on cancer type"""
-    cancer_type = cancer_type.lower()
-
-    if "breast" in cancer_type:
-        if "her2+" in cancer_type or "her2 positive" in cancer_type:
-            return "Trastuzumab"
-        elif "her2-" in cancer_type or "her2 negative" in cancer_type:
-            return "Tamoxifen"
-        else:
-            return "Tamoxifen, Trastuzumab"
-    elif "lung" in cancer_type:
-        return "Pembrolizumab"
-    elif "colon" in cancer_type or "colorectal" in cancer_type:
-        return "Fluorouracil"
-    elif "prostate" in cancer_type:
-        return "Abiraterone"
-    elif "melanoma" in cancer_type:
-        return "Nivolumab"
-    elif "leukemia" in cancer_type:
-        return "Imatinib"
-    else:
-        # Generic cancer drugs that are commonly used
-        return "Cyclophosphamide, Doxorubicin, Paclitaxel"
+    return initialize_system()
 
 
 def main():
     st.title("Oncology Treatment Information Assistant")
 
-    # Initialize session state for conversation flow and data collection
+    # Initialize conversation states.
     if "stage" not in st.session_state:
         st.session_state.stage = 0
-
     if "patient_data" not in st.session_state:
-        st.session_state.patient_data = {
-            "demographics": {},
-            "cancer_info": {},
-            "treatment_history": [],
-            "considered_treatments": [],
-            "recommendations_generated": False
-        }
-
+        st.session_state.patient_data = {}
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # Load recommendation system
-    drug_chain = load_system()
+    # Load the recommendation chain system and the llm instance.
+    drug_chain, llm = load_system()
 
-    # Display conversation history
-    chat_container = st.container()
-    with chat_container:
-        for message in st.session_state.chat_history:
-            if message["role"] == "user":
-                st.markdown(f"**Patient:** {message['content']}")
-            else:
-                st.markdown(f"**Assistant:** {message['content']}")
+    # When starting a new conversation, automatically generate the initial generic question.
+    if st.session_state.stage == 0 and not st.session_state.chat_history:
+        initial_question = generate_generic_question(0, st.session_state.patient_data)
+        st.session_state.chat_history.append({"role": "assistant", "content": initial_question})
 
-    # Initial welcome message
-    if st.session_state.stage == 0:
-        welcome_msg = "Hi there, I am a research specialist designed to give information on treatment options based on published data. Can you start by telling me a little bit about yourself? Age, gender, and relevant health history?"
-        st.session_state.chat_history.append({"role": "assistant", "content": welcome_msg})
-        st.session_state.stage = 1
-        st.rerun()
+    # Display the conversation history.
+    for message in st.session_state.chat_history:
+        if message["role"] == "user":
+            st.markdown(f"**You:** {message['content']}")
+        else:
+            st.markdown(f"**Assistant:** {message['content']}")
 
-    # Handle user input based on conversation stage
-    with st.form(key="patient_form", clear_on_submit=True):
-        user_input = st.text_input("Your response:", key="user_message")
-        submit_button = st.form_submit_button("Send")
-
-    if submit_button and user_input:
-        # Add user response to chat history
+    user_input = st.text_input("Your response:", key="user_message")
+    if st.button("Send"):
+        # Append user input.
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        # Process input based on current stage
-        if st.session_state.stage == 1:  # Demographics
-            st.session_state.patient_data["demographics"]["response"] = user_input
+        # Process response based on conversation stage.
+        if st.session_state.stage == 0:
+            # Save demographics (age/gender/history).
+            st.session_state.patient_data["demographics"] = user_input
+            next_q = generate_generic_question(1, st.session_state.patient_data)
+            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
+            st.session_state.stage = 1
 
-            # Ask about cancer type
-            next_question = "Thank you for sharing. What type of cancer have you been diagnosed with?"
-            st.session_state.chat_history.append({"role": "assistant", "content": next_question})
+        elif st.session_state.stage == 1:
+            st.session_state.patient_data["cancer_type"] = user_input
+            next_q = generate_generic_question(2, st.session_state.patient_data)
+            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
             st.session_state.stage = 2
 
-        elif st.session_state.stage == 2:  # Cancer type
-            st.session_state.patient_data["cancer_info"]["type"] = user_input
-
-            # Ask about cancer spread/stage
-            next_question = "How much has the cancer spread? Is it in the lymph nodes or other systems? Do you know what stage it is?"
-            st.session_state.chat_history.append({"role": "assistant", "content": next_question})
+        elif st.session_state.stage == 2:
+            st.session_state.patient_data["cancer_stage"] = user_input
+            next_q = generate_generic_question(3, st.session_state.patient_data)
+            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
             st.session_state.stage = 3
 
-        elif st.session_state.stage == 3:  # Cancer spread/stage
-            st.session_state.patient_data["cancer_info"]["stage"] = user_input
-
-            # Ask about cancer subtype
-            next_question = "Do you know the subtype of your cancer or any genetic expressions that have been identified (like HER2, EGFR, PD-L1, etc.)?"
-            st.session_state.chat_history.append({"role": "assistant", "content": next_question})
+        elif st.session_state.stage == 3:
+            st.session_state.patient_data["cancer_subtype"] = user_input
+            next_q = generate_generic_question(4, st.session_state.patient_data)
+            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
             st.session_state.stage = 4
 
-        elif st.session_state.stage == 4:  # Cancer subtype
-            st.session_state.patient_data["cancer_info"]["subtype"] = user_input
-
-            # Ask about treatment history
-            next_question = "What treatments have you had so far for your cancer?"
-            st.session_state.chat_history.append({"role": "assistant", "content": next_question})
-            st.session_state.stage = 5
-
-        elif st.session_state.stage == 5:  # Treatment history
+        elif st.session_state.stage == 4:
             st.session_state.patient_data["treatment_history"] = user_input
 
-            # Ask about treatments being considered
-            next_question = "What specific medications or drugs is your doctor recommending or are you considering? Please provide the names if possible."
-            st.session_state.chat_history.append({"role": "assistant", "content": next_question})
-            st.session_state.stage = 6
-
-        elif st.session_state.stage == 6:  # Treatments being considered
-            st.session_state.patient_data["considered_treatments"] = user_input
-
-            # Summarize collected information
-            summary = f"""
-            Thank you for providing this information. Based on what you've shared:
-
-            Demographics: {st.session_state.patient_data["demographics"]["response"]}
-            Cancer Type: {st.session_state.patient_data["cancer_info"]["type"]}
-            Cancer Stage: {st.session_state.patient_data["cancer_info"]["stage"]}
-            Cancer Subtype: {st.session_state.patient_data["cancer_info"]["subtype"]}
-            Prior Treatments: {st.session_state.patient_data["treatment_history"]}
-            Considered Treatments: {st.session_state.patient_data["considered_treatments"]}
-
-            I'll now search for evidence-based treatment options that may be relevant to your situation.
-            """
-
-            st.session_state.chat_history.append({"role": "assistant", "content": summary})
-
-            # Move to the next stage where we'll generate drug recommendations
-            st.session_state.stage = 7
-            st.rerun()
-
-        elif st.session_state.stage == 7:  # Generate recommendations
-            if not st.session_state.patient_data.get("recommendations_generated", False):
-                # Determine what drugs to query
-                considered_treatments = st.session_state.patient_data["considered_treatments"].lower()
-                cancer_type = st.session_state.patient_data["cancer_info"]["type"]
-
-                # If user input is vague, use default drugs based on cancer type
-                if considered_treatments in ["any drug", "drugs", "medication", "any", "not sure"]:
-                    drugs_to_query = get_default_drug_for_cancer(cancer_type)
-                else:
-                    drugs_to_query = st.session_state.patient_data["considered_treatments"]
-
-                # Prepare and send query to drug recommendation chain
-                query = f"Provide information about {drugs_to_query} for {cancer_type}"
-
-                try:
-                    # Generate drug recommendation
-                    drug_info = drug_chain.invoke(query)
-
-                    # Display the drug information
-                    st.session_state.chat_history.append({"role": "assistant", "content": drug_info})
-
-                    # Mark recommendations as generated
-                    st.session_state.patient_data["recommendations_generated"] = True
-
-                    # Ask if they need more information
-                    follow_up = "Do you have any questions about this information or would you like to know about a different treatment?"
-                    st.session_state.chat_history.append({"role": "assistant", "content": follow_up})
-
-                    # Move to follow-up stage
-                    st.session_state.stage = 8
-                except Exception as e:
-                    # Handle errors and provide fallback response
-                    fallback_response = f"""
-                    ✅ Drug Name: {drugs_to_query}
-                    📊 Clinical Trial Data: FDA.gov
-                    ⏳ Overall Survival (OS) Benefit: Data not available
-                    ⚠️ PFS Improvement Only (No OS Benefit): Not applicable
-                    🔬 Off-Label Use in this Cancer Type?: Not applicable
-
-                    💡 Summary:
-                    - Limited data is available in our database for {drugs_to_query} in {cancer_type}.
-                    - It's important to discuss the complete clinical evidence with your oncologist.
-                    - Be cautious: Many treatments do not improve survival but are still widely used.
-                    """
-
-                    st.session_state.chat_history.append({"role": "assistant", "content": fallback_response})
-
-                    # Mark recommendations as generated
-                    st.session_state.patient_data["recommendations_generated"] = True
-
-                    # Ask if they need more information
-                    follow_up = "Would you like information about a different treatment option?"
-                    st.session_state.chat_history.append({"role": "assistant", "content": follow_up})
-
-                    # Move to follow-up stage
-                    st.session_state.stage = 8
-
-                st.rerun()
-            else:
-                # Process follow-up question
-                follow_up_query = f"Patient asking about {st.session_state.patient_data['considered_treatments']} for {st.session_state.patient_data['cancer_info']['type']}: {user_input}"
-
-                try:
-                    follow_up_response = drug_chain.invoke(follow_up_query)
-                    st.session_state.chat_history.append({"role": "assistant", "content": follow_up_response})
-                except Exception as e:
-                    error_msg = "I apologize, but I couldn't find specific information to answer your question. Would you like to ask about a different medication?"
-                    st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
-
-        elif st.session_state.stage == 8:  # Follow-up questions
-            # Process follow-up questions
-            follow_up_query = f"Patient asking about {st.session_state.patient_data['considered_treatments']} for {st.session_state.patient_data['cancer_info']['type']}: {user_input}"
-
+            # Generate final query using a generic prompt.
+            final_query = generate_generic_question(5, st.session_state.patient_data)
             try:
-                follow_up_response = drug_chain.invoke(follow_up_query)
-                st.session_state.chat_history.append({"role": "assistant", "content": follow_up_response})
-            except Exception as e:
-                error_msg = "I apologize, but I couldn't find specific information to answer your question. Would you like to ask about a different medication?"
+                recommendation = drug_chain.invoke(final_query)
+                st.session_state.chat_history.append({"role": "assistant", "content": recommendation})
+            except Exception:
+                error_msg = (
+                    "I apologize, but I couldn't find specific information to make a recommendation. "
+                    "Please try refining your inputs or ask about a different scenario."
+                )
                 st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+            st.session_state.stage = 5
 
-        st.rerun()
+        elif st.session_state.stage == 5:
+            # For follow-up queries, store the follow-up and generate a generic follow-up response.
+            st.session_state.patient_data["followup"] = user_input
+            followup_prompt = generate_generic_question(6, st.session_state.patient_data)
+            try:
+                followup_answer = drug_chain.invoke(followup_prompt)
+                st.session_state.chat_history.append({"role": "assistant", "content": followup_answer})
+            except Exception:
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": "I couldn't find additional information. Please clarify your question or ask about another treatment."
+                })
 
-    # Handle automatic drug recommendation generation
-    if st.session_state.stage == 7 and not st.session_state.patient_data.get("recommendations_generated", False):
-        # This ensures recommendations are generated automatically
-        considered_treatments = st.session_state.patient_data["considered_treatments"].lower()
-        cancer_type = st.session_state.patient_data["cancer_info"]["type"]
+        st.rerun()  # Update the UI.
 
-        # If user input is vague, use default drugs based on cancer type
-        if considered_treatments in ["any drug", "drugs", "medication", "any", "not sure"]:
-            drugs_to_query = get_default_drug_for_cancer(cancer_type)
-        else:
-            drugs_to_query = st.session_state.patient_data["considered_treatments"]
-
-        # Prepare and send query to drug recommendation chain
-        query = f"Provide information about {drugs_to_query} for {cancer_type}"
-
-        try:
-            # Generate drug recommendation
-            drug_info = drug_chain.invoke(query)
-
-            # Display the drug information
-            st.session_state.chat_history.append({"role": "assistant", "content": drug_info})
-
-            # Mark recommendations as generated
-            st.session_state.patient_data["recommendations_generated"] = True
-
-            # Ask if they need more information
-            follow_up = "Do you have any questions about this information or would you like to know about a different treatment?"
-            st.session_state.chat_history.append({"role": "assistant", "content": follow_up})
-
-            # Move to follow-up stage
-            st.session_state.stage = 8
-        except Exception as e:
-            # Handle errors and provide fallback response
-            fallback_response = f"""
-            ✅ Drug Name: {drugs_to_query}
-            📊 Clinical Trial Data: FDA.gov
-            ⏳ Overall Survival (OS) Benefit: Data not available
-            ⚠️ PFS Improvement Only (No OS Benefit): Not applicable
-            🔬 Off-Label Use in this Cancer Type?: Not applicable
-
-            💡 Summary:
-            - Limited data is available in our database for {drugs_to_query} in {cancer_type}.
-            - It's important to discuss the complete clinical evidence with your oncologist.
-            - Be cautious: Many treatments do not improve survival but are still widely used.
-            """
-
-            st.session_state.chat_history.append({"role": "assistant", "content": fallback_response})
-
-            # Mark recommendations as generated
-            st.session_state.patient_data["recommendations_generated"] = True
-
-            # Ask if they need more information
-            follow_up = "Would you like information about a different treatment option?"
-            st.session_state.chat_history.append({"role": "assistant", "content": follow_up})
-
-            # Move to follow-up stage
-            st.session_state.stage = 8
-
-        st.rerun()
-
-    # Option to start a new conversation
-    if st.session_state.stage > 0 and st.button("Start New Conversation"):
+    if st.button("Start New Conversation"):
         st.session_state.stage = 0
-        st.session_state.patient_data = {
-            "demographics": {},
-            "cancer_info": {},
-            "treatment_history": [],
-            "considered_treatments": [],
-            "recommendations_generated": False
-        }
+        st.session_state.patient_data = {}
         st.session_state.chat_history = []
         st.rerun()
 
