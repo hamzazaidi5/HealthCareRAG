@@ -3,78 +3,63 @@ from utils.config import Config
 from chain.custom_chain import DrugRecommendationChain
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-
 from utils.data_loader import OncologyDataLoader
+from langchain.schema import SystemMessage, HumanMessage, AIMessage
 
-# Initialize a ChatOpenAI instance for generating questions.
-question_llm = ChatOpenAI(
+# Initialize ChatOpenAI instance used for generating questions.
+chat_model = ChatOpenAI(
     temperature=0,
     model_name=Config.LLM_MODEL,
     openai_api_key=Config.OPENAI_API_KEY
 )
 
+# Define an initial system message that sets the conversation context.
+initial_system_msg = SystemMessage(
+    content=(
+        "You are a friendly, professional oncology treatment assistant. "
+        "Your task is to ask the user a series of up to 5 generic questions to collect key patient data "
+        "(e.g., demographics, cancer type, stage, subtype, treatment history). "
+        "After these interactions, generate a final query summarizing the patient data to identify the best FDA-approved drug(s) "
+        "and available survival data."
+    )
+)
 
-def generate_generic_question(stage, patient_data):
-    """
-    Generate a generic question based on the conversation stage and collected patient data.
-    """
-    if stage == 0:
-        prompt = (
-            "You are a friendly, professional medical chatbot. "
-            "Greet the user and ask for their age, gender, and any relevant health history in a concise, generic manner."
-        )
-    elif stage == 1:
-        prompt = (
-            f"The user has provided basic demographics: {patient_data.get('demographics', '')}. "
-            "Now, ask in a generic way: What type of cancer have you been diagnosed with?"
-        )
-    elif stage == 2:
-        prompt = (
-            f"The user mentioned their cancer type as: {patient_data.get('cancer_type', '')}. "
-            "Ask generically: Do you know the stage of your cancer?"
-        )
-    elif stage == 3:
-        prompt = (
-            f"The user stated the cancer stage as: {patient_data.get('cancer_stage', '')}. "
-            "Ask generically: Are there any known subtypes or genetic markers associated with your cancer (e.g., HER2, EGFR)?"
-        )
-    elif stage == 4:
-        prompt = (
-            f"The user provided subtype information: {patient_data.get('cancer_subtype', '')}. "
-            "Ask generically: What treatments have you received so far?"
-        )
-    elif stage == 5:
-        prompt = (
-            "Now that all necessary patient data has been collected, "
-            "generate a concise final query summarizing the patient data to identify the best FDA-approved drug(s) and available survival data."
-        )
-    elif stage == 6:
-        prompt = (
-            f"The user has a follow-up question: {patient_data.get('followup', '')}. "
-            "Generate a clarifying generic follow-up response that addresses this query."
-        )
-    else:
-        prompt = "Could you please provide additional details?"
+# Initialize conversation messages in session state using LangChain message objects.
+if "messages" not in st.session_state:
+    st.session_state.messages = [initial_system_msg]
+    # Add a welcome message
+    welcome_message = AIMessage(
+        content="Hello! I'm your oncology treatment assistant. I'll help you find the most appropriate FDA-approved treatment options based on your situation. Let's start with some questions about the patient. What is the patient's age and gender?")
+    st.session_state.messages.append(welcome_message)
 
-    response = question_llm(prompt)
-    return response.content.strip()
+# Display the conversation history.
+for msg in st.session_state.messages:
+    if isinstance(msg, HumanMessage):
+        st.chat_message("user").write(msg.content)
+    elif isinstance(msg, AIMessage):
+        st.chat_message("assistant").write(msg.content)
+    # Hide system messages from the UI
+    # elif isinstance(msg, SystemMessage):
+    #     st.markdown(f"**System:** {msg.content}")
 
 
-def initialize_system():
-    # 1) Load your CSV as Documents (entire file or limited rows based on need)
+# Load the drug recommendation chain and related system components.
+@st.cache_resource
+def load_system():
+    # 1) Load documents from CSV using the OncologyDataLoader.
     documents = OncologyDataLoader(Config.CSV_PATH).load_data()
 
-    # 2) Create embeddings using your selected model and API key.
+    # 2) Create embeddings.
     embeddings = OpenAIEmbeddings(
         model=Config.EMBEDDING_MODEL,
         openai_api_key=Config.OPENAI_API_KEY
     )
 
-    # 3) Build the FAISS vector store for efficient document retrieval.
+    # 3) Build the FAISS vector store.
     vector_store = FAISS.from_documents(documents, embeddings)
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
-    # 4) Initialize the LLM for recommendation generation.
+    # 4) Initialize the LLM for drug recommendation.
     llm = ChatOpenAI(
         temperature=0,
         model_name=Config.LLM_MODEL,
@@ -83,109 +68,65 @@ def initialize_system():
 
     # 5) Create your custom drug recommendation chain.
     drug_chain = DrugRecommendationChain(retriever, llm)
-    return drug_chain, llm
+    return drug_chain
 
 
-# Cache the system initialization so that the vector store and LLM load only once.
-@st.cache_resource
-def load_system():
-    return initialize_system()
+# Text input for the user's response - use st.chat_input instead of text_input
+user_input = st.chat_input("Your response:")
 
+if user_input:
+    # Append the user's response as a HumanMessage.
+    st.chat_message("user").write(user_input)
+    st.session_state.messages.append(HumanMessage(content=user_input))
 
-def main():
-    st.title("Oncology Treatment Information Assistant")
+    # Count the number of human responses (i.e. conversation turns).
+    num_turns = sum(1 for m in st.session_state.messages if isinstance(m, HumanMessage))
 
-    # Initialize conversation states.
-    if "stage" not in st.session_state:
-        st.session_state.stage = 0
-    if "patient_data" not in st.session_state:
-        st.session_state.patient_data = {}
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    # If less than 5 turns, generate the next question.
+    if num_turns < 5:
+        # Use the conversation history as context.
+        # chat_model.invoke() accepts a list of messages and returns an AIMessage.
+        with st.spinner("Thinking..."):
+            next_question_msg = chat_model.invoke(st.session_state.messages)
+            response_content = next_question_msg.content
+            st.session_state.messages.append(AIMessage(content=response_content))
+            st.chat_message("assistant").write(response_content)
+    else:
+        # Final stage: Generate a final query from the conversation.
+        with st.spinner("Analyzing patient data and generating drug recommendations..."):
+            final_prompt = "Based on the following conversation, generate a final query summarizing the patient data for drug recommendation:\n"
+            for msg in st.session_state.messages:
+                if isinstance(msg, HumanMessage):
+                    final_prompt += f"User: {msg.content}\n"
+                elif isinstance(msg, AIMessage) and not isinstance(msg, SystemMessage):
+                    final_prompt += f"Assistant: {msg.content}\n"
 
-    # Load the recommendation chain system and the llm instance.
-    drug_chain, llm = load_system()
-
-    # When starting a new conversation, automatically generate the initial generic question.
-    if st.session_state.stage == 0 and not st.session_state.chat_history:
-        initial_question = generate_generic_question(0, st.session_state.patient_data)
-        st.session_state.chat_history.append({"role": "assistant", "content": initial_question})
-
-    # Display the conversation history.
-    for message in st.session_state.chat_history:
-        if message["role"] == "user":
-            st.markdown(f"**You:** {message['content']}")
-        else:
-            st.markdown(f"**Assistant:** {message['content']}")
-
-    user_input = st.text_input("Your response:", key="user_message")
-    if st.button("Send"):
-        # Append user input.
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-
-        # Process response based on conversation stage.
-        if st.session_state.stage == 0:
-            # Save demographics (age/gender/history).
-            st.session_state.patient_data["demographics"] = user_input
-            next_q = generate_generic_question(1, st.session_state.patient_data)
-            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
-            st.session_state.stage = 1
-
-        elif st.session_state.stage == 1:
-            st.session_state.patient_data["cancer_type"] = user_input
-            next_q = generate_generic_question(2, st.session_state.patient_data)
-            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
-            st.session_state.stage = 2
-
-        elif st.session_state.stage == 2:
-            st.session_state.patient_data["cancer_stage"] = user_input
-            next_q = generate_generic_question(3, st.session_state.patient_data)
-            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
-            st.session_state.stage = 3
-
-        elif st.session_state.stage == 3:
-            st.session_state.patient_data["cancer_subtype"] = user_input
-            next_q = generate_generic_question(4, st.session_state.patient_data)
-            st.session_state.chat_history.append({"role": "assistant", "content": next_q})
-            st.session_state.stage = 4
-
-        elif st.session_state.stage == 4:
-            st.session_state.patient_data["treatment_history"] = user_input
-
-            # Generate final query using a generic prompt.
-            final_query = generate_generic_question(5, st.session_state.patient_data)
             try:
-                recommendation = drug_chain.invoke(final_query)
-                st.session_state.chat_history.append({"role": "assistant", "content": recommendation})
-            except Exception:
-                error_msg = (
-                    "I apologize, but I couldn't find specific information to make a recommendation. "
-                    "Please try refining your inputs or ask about a different scenario."
-                )
-                st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
-            st.session_state.stage = 5
+                # Load the drug recommendation chain (cached).
+                drug_chain = load_system()
+                # Generate the patient summary
+                with st.status("Step 1: Summarizing patient data..."):
+                    patient_summary = chat_model.invoke([SystemMessage(
+                        content="Summarize the patient information from this conversation into a concise query for drug recommendation."),
+                                                         HumanMessage(content=final_prompt)])
 
-        elif st.session_state.stage == 5:
-            # For follow-up queries, store the follow-up and generate a generic follow-up response.
-            st.session_state.patient_data["followup"] = user_input
-            followup_prompt = generate_generic_question(6, st.session_state.patient_data)
-            try:
-                followup_answer = drug_chain.invoke(followup_prompt)
-                st.session_state.chat_history.append({"role": "assistant", "content": followup_answer})
-            except Exception:
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": "I couldn't find additional information. Please clarify your question or ask about another treatment."
-                })
+                # Use the summary to get drug recommendations
+                with st.status("Step 2: Retrieving drug recommendations..."):
+                    recommendation = drug_chain.invoke(patient_summary.content)
 
-        st.rerun()  # Update the UI.
+                # Display the recommendation
+                st.session_state.messages.append(AIMessage(content=recommendation))
+                st.chat_message("assistant").write(recommendation)
+            except Exception as e:
+                error_message = "I apologize, but I couldn't generate a drug recommendation. Please try refining your inputs."
+                st.error(f"Error: {str(e)}")
+                st.session_state.messages.append(AIMessage(content=error_message))
+                st.chat_message("assistant").write(error_message)
 
-    if st.button("Start New Conversation"):
-        st.session_state.stage = 0
-        st.session_state.patient_data = {}
-        st.session_state.chat_history = []
-        st.rerun()
-
-
-if __name__ == "__main__":
-    main()
+if st.sidebar.button("Start New Conversation"):
+    st.session_state.messages = [initial_system_msg]
+    # Add a welcome message
+    welcome_message = AIMessage(
+        content="Hello! I'm your oncology treatment assistant. I'll help you find the most appropriate FDA-approved treatment options based on your situation. Let's start with some questions about the patient. What is the patient's age and gender?")
+    st.session_state.messages.append(welcome_message)
+    st.rerun()
