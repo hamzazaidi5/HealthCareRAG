@@ -19,6 +19,7 @@ class DrugRecommendationChain:
 
         ### CRITICAL INSTRUCTION:
         Ensure that all drug recommendations are SPECIFICALLY APPROVED for the EXACT cancer type mentioned in the patient information.
+        PROVIDE A MAXIMUM OF 2 DRUG RECOMMENDATIONS ONLY, prioritizing those with the strongest overall survival benefit.
         If you cannot find FDA-approved drugs for the EXACT cancer type, state this clearly and recommend standard of care options.
 
         ### Patient Information:
