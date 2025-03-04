@@ -12,7 +12,7 @@ class DrugRecommendationChain:
         self.retriever = retriever
         self.llm = llm
 
-        # Enhanced prompt that emphasizes cancer type matching and relevance
+        # Enhanced prompt with stronger emphasis on OS as the gold standard while ensuring accuracy
         self.prompt = ChatPromptTemplate.from_template(
             """You are an AI assistant providing evidence-based oncology treatment insights.
         Your responses must be grounded in clinical trial data from FDA-approved drugs and reference outcomes directly from the FDA.gov website.
@@ -28,39 +28,51 @@ class DrugRecommendationChain:
         ### Retrieved Context (use ONLY this data for recommendations):
         {context}
 
+        ### ⚠️ OVERALL SURVIVAL (OS) IS THE GOLD STANDARD ⚠️
+        - **EMPHASIZE THIS FACT IN YOUR RESPONSE**: OS benefit (helping patients live longer) is the most important outcome.
+        - If survival data is provided in the context, use the actual numbers provided.
+        - Only state "NO PROVEN SURVIVAL BENEFIT" if:
+           a) The context explicitly states OS was not improved, OR
+           b) The context only mentions PFS/ORR improvements without any OS data
+        - If OS improvement exists but is minimal (1-3 months), clearly state: "Minimal survival benefit of only X months."
+        - For each drug, specify whether there is evidence it helps patients live longer.
+
         ### Key Considerations for Responses:
         1️⃣ **Cancer Type Specificity**
            - ONLY recommend drugs that are FDA-approved for the EXACT CANCER TYPE mentioned in the patient information.
            - If no drugs in the context are approved for this cancer type, clearly state this.
 
-        2️⃣ **Overall Survival (OS) is the Gold Standard**
-           - The most meaningful outcome measure is **OS (Overall Survival)**—whether a drug **helps patients live longer**.
-           - If the OS benefit is marginal (e.g., only weeks/months), clarify that the impact may be clinically insignificant.
+        2️⃣ **Rank Recommendations by Survival Benefit**
+           - Drugs with statistically significant OS improvement should be listed first.
+           - For each drug, prominently display OS benefit in months/years when data is available.
+           - If OS data is not provided in context, state "OS data not available in current information" rather than claiming no benefit.
 
-        3️⃣ **Other Outcomes (PFS, ORR) Do NOT Prove Survival Benefit**
-           - Drugs approved based on **Progression-Free Survival (PFS)** or **Response Rate (ORR, DOR, CR, PR)** do not necessarily extend life.
-           - Explicitly state: **A drug that improves PFS does not necessarily extend a patient's life.**
-           - If a drug is approved solely on PFS or ORR without an OS benefit, highlight this fact.
+        3️⃣ **Other Outcomes (PFS, ORR) Are Secondary**
+           - Clearly label: "⚠️ IMPORTANT: Progression-Free Survival (PFS) improvements alone do NOT necessarily mean patients will live longer."
+           - Explain that PFS and response rates are surrogate endpoints that may not translate to actual survival benefits.
 
         4️⃣ **Be Direct, Clear, and Factual**
-           - Clearly indicate if a drug does not improve survival.
-           - Avoid providing false hope or exaggerated benefits—only relay clinical data.
-           - Always reference **FDA clinical trials and regulatory decisions**.
+           - Never invent survival data not present in the context.
+           - Use precise language about survival benefits based on the data provided.
+           - If the context lacks OS data for a drug, acknowledge this gap rather than making claims either way.
 
         ### Response Format:
-        - **Introduction:** Begin with "Based on the patient information provided, here are the FDA-approved drugs and relevant survival data for [EXACT CANCER TYPE]:"
+        - **Introduction:** Begin with "Based on the patient information provided, here are the FDA-approved drugs for [EXACT CANCER TYPE] with a focus on actual survival benefits:"
 
         - **Drug Recommendations:** For each recommended drug, include:
            - **Drug Name**
+           - **❗ Survival Impact:** [One of: "Extends life by X months/years" OR "NO PROVEN SURVIVAL BENEFIT" OR "OS data not available in current information"]
            - **FDA Approval Status** for this specific cancer type
-           - **Clinical Trial Data** (Source: FDA.gov)
-           - **Overall Survival (OS) Benefit** (specify months/years if available)
-           - **PFS Improvement** (mention if no OS benefit)
+           - **Clinical Trial Data** (Source: FDA.gov) - include actual numbers from context
+           - **Other Outcomes** (PFS, ORR) with clear indication these are not survival benefits
            - **Off-Label Use?** (Yes/No for this cancer type)
 
-        - **Summary:** Prefixed with "💡 **Summary:**" that concisely explains the recommendation, including any caveats regarding marginal benefits or off-label use.
+        - **Summary:** Prefixed with "💡 **SUMMARY:**" that emphasizes:
+           1. Whether any recommended drugs have proven OS benefits (based solely on provided context)
+           2. The magnitude of any survival benefit (in months/years)
+           3. Clear statement if OS data is missing from the context
 
-        - **Final Caution Note:** End with "**Be cautious**: Some treatments may not improve survival but are still commonly used."
+        - **Final Caution Note:** End with "**⚠️ IMPORTANT REMINDER:** Some treatments may not improve survival but are still commonly used."
         """
         )
 
@@ -95,13 +107,20 @@ class DrugRecommendationChain:
         except:
             return "unknown cancer type"
 
+    def _enhance_question_with_os_focus(self, question, cancer_type):
+        """Add explicit OS focus to the patient question"""
+        enhanced = f"The patient has {cancer_type}. " + question
+        if "overall survival" not in enhanced.lower() and "os" not in enhanced.lower():
+            enhanced += " Please prioritize information about OVERALL SURVIVAL benefits and clearly distinguish between drugs that help patients live longer versus those that only improve disease metrics."
+        return enhanced
+
     def invoke(self, question: str) -> str:
         try:
             # Extract the cancer type for enhanced precision
             cancer_type = self._extract_cancer_type(question)
 
-            # Enhance the question with explicit cancer type
-            enhanced_question = f"The patient has {cancer_type}. " + question
+            # Enhance the question with explicit cancer type and OS focus
+            enhanced_question = self._enhance_question_with_os_focus(question, cancer_type)
 
             # Get results with the enhanced question
             result = self.chain.invoke(enhanced_question)
@@ -110,12 +129,14 @@ class DrugRecommendationChain:
             if not result or result.strip() == "":
                 return f"""Based on the information provided, I cannot find specific FDA-approved drugs for {cancer_type} in my knowledge base. 
 
+⚠️ IMPORTANT REMINDER: When evaluating cancer treatments, overall survival (helping patients live longer) is the gold standard outcome.
+
 This could be due to:
 1. {cancer_type} may be rare or have specialized treatment protocols
 2. The database may not contain the latest FDA approvals for this specific cancer type
 3. Treatment may be based on NCCN guidelines rather than specific FDA-approved drugs
 
-Please consult with a medical oncologist who can provide personalized treatment recommendations based on the latest clinical guidelines."""
+Please consult with a medical oncologist who can provide personalized treatment recommendations based on the latest clinical guidelines and discuss which treatments, if any, have been proven to extend life."""
 
             return result
         except Exception as e:

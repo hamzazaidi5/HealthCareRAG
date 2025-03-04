@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 import tempfile
-from langchain.document_loaders.csv_loader import CSVLoader
+from langchain_community.document_loaders.csv_loader import CSVLoader
 
 class OncologyDataLoader:
     def __init__(self, file_path, nrows=None):
