@@ -1,10 +1,45 @@
 import streamlit as st
+import random
 from utils.config import Config
 from chain.custom_chain import DrugRecommendationChain
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from utils.data_loader import OncologyDataLoader
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
+import re
+
+from utils.data_loader import OncologyDataLoader
+
+
+# Humanization Helper Functions
+def get_thinking_phrases():
+    return [
+        "Let me think about that...",
+        "Hmm, let me gather my thoughts...",
+        "Interesting! Give me a moment to process...",
+        "Let me put on my oncology detective hat...",
+        "Analyzing the details carefully...",
+        "Processing your information...",
+        "Consulting my medical knowledge base...",
+        "Just a sec while I review the details...",
+    ]
+
+
+def get_empathetic_intros():
+    return [
+        "I appreciate you sharing this important information. ",
+        "Thank you for providing those details. ",
+        "I'm carefully considering the information you've shared. ",
+        "Your input is crucial for making the best recommendation. ",
+    ]
+
+
+def get_follow_up_questions():
+    return [
+        "To help me provide the most accurate recommendations, ",
+        "To ensure we cover all the important details, ",
+        "To get a complete picture of the patient's condition, ",
+    ]
+
 
 # Initialize ChatOpenAI instance used for generating questions.
 chat_model = ChatOpenAI(
@@ -13,34 +48,28 @@ chat_model = ChatOpenAI(
     openai_api_key=Config.OPENAI_API_KEY
 )
 
-# initial_system_msg = SystemMessage(
-#     content=(
-#         "You are a friendly, professional oncology treatment assistant. "
-#         "Your task is to ask the user a series of up to 5 specific questions to collect key patient data. "
-#         "Always start with age, gender, and cancer type. Then ask about stage, histology/subtype, biomarkers, "
-#         "and treatment history. Keep your questions focused and specific. "
-#         "After collecting this information, automatically proceed to generate treatment recommendations "
-#         "without asking the user to wait or confirm."
-#     )
-# )
-
-# Define an initial system message that sets the conversation context.
+# Define an initial system message that sets the conversation context with a more human touch
 initial_system_msg = SystemMessage(
     content=(
-        "You are a friendly, professional oncology treatment assistant. "
-        "Your task is to ask the user a series of up to 5 generic questions to collect key patient data "
-        "(e.g., demographics, cancer type, stage, subtype, treatment history). "
-        "After collecting this information, automatically proceed to generate treatment recommendations "
-        "without asking the user to wait or confirm."
-  )
+        "You are a compassionate, professional oncology treatment assistant. "
+        "Communicate in a warm, supportive manner while maintaining medical accuracy. "
+        "Your goal is to gather key patient information through friendly, targeted questions. "
+        "Use empathetic language and show genuine care in your interactions."
+    )
 )
 
 # Initialize conversation messages in session state using LangChain message objects.
 if "messages" not in st.session_state:
     st.session_state.messages = [initial_system_msg]
-    # Add a welcome message
+    # Add a more conversational welcome message
     welcome_message = AIMessage(
-        content="Hello! I'm your oncology treatment assistant. I'll help you find the most appropriate FDA-approved treatment options. To get started, please tell me the patient's age and gender, and what type of cancer they have.")
+        content=(
+            "Hi there! 👋 I'm your oncology treatment support assistant. 🩺 "
+            "I'm here to help find the most appropriate treatment options with care and precision. "
+            "Let's start by getting to know a bit about the patient. "
+            "Could you tell me their age, gender, and type of cancer?"
+        )
+    )
     st.session_state.messages.append(welcome_message)
 
 # Initialize turn counter if not exists
@@ -55,41 +84,13 @@ if "questions_complete" not in st.session_state:
 if "cancer_type" not in st.session_state:
     st.session_state.cancer_type = None
 
-# Display the conversation history.
+# Display the conversation history with more engaging presentation
 for msg in st.session_state.messages:
     if isinstance(msg, HumanMessage):
         st.chat_message("user").write(msg.content)
     elif isinstance(msg, AIMessage):
+        # Add a little randomness to make it feel more natural
         st.chat_message("assistant").write(msg.content)
-    # System messages are hidden
-
-
-# Load the drug recommendation chain and related system components.
-@st.cache_resource
-def load_system():
-    # 1) Load documents from CSV using the OncologyDataLoader.
-    documents = OncologyDataLoader(Config.CSV_PATH).load_data()
-
-    # 2) Create embeddings.
-    embeddings = OpenAIEmbeddings(
-        model=Config.EMBEDDING_MODEL,
-        openai_api_key=Config.OPENAI_API_KEY
-    )
-
-    # 3) Build the FAISS vector store.
-    vector_store = FAISS.from_documents(documents, embeddings)
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})  # Increased from 3 to 5 for better context
-
-    # 4) Initialize the LLM for drug recommendation.
-    llm = ChatOpenAI(
-        temperature=0,
-        model_name=Config.LLM_MODEL,
-        openai_api_key=Config.OPENAI_API_KEY
-    )
-
-    # 5) Create your custom drug recommendation chain.
-    drug_chain = DrugRecommendationChain(retriever, llm)
-    return drug_chain
 
 
 # Function to extract cancer type from conversation
@@ -125,11 +126,39 @@ def extract_cancer_type(messages):
         return "Unknown"
 
 
-# Text input for the user's response - use st.chat_input instead of text_input
-user_input = st.chat_input("Your response:")
+# Load the drug recommendation chain and related system components
+@st.cache_resource
+def load_system():
+    # 1) Load documents from CSV using the OncologyDataLoader
+    documents = OncologyDataLoader(Config.CSV_PATH).load_data()
+
+    # 2) Create embeddings
+    embeddings = OpenAIEmbeddings(
+        model=Config.EMBEDDING_MODEL,
+        openai_api_key=Config.OPENAI_API_KEY
+    )
+
+    # 3) Build the FAISS vector store
+    vector_store = FAISS.from_documents(documents, embeddings)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+
+    # 4) Initialize the LLM for drug recommendation
+    llm = ChatOpenAI(
+        temperature=0,
+        model_name=Config.LLM_MODEL,
+        openai_api_key=Config.OPENAI_API_KEY
+    )
+
+    # 5) Create your custom drug recommendation chain
+    drug_chain = DrugRecommendationChain(retriever, llm)
+    return drug_chain
+
+
+# Text input for the user's response
+user_input = st.chat_input("Your response...")
 
 if user_input:
-    # Append the user's response as a HumanMessage.
+    # Append the user's response as a HumanMessage
     st.chat_message("user").write(user_input)
     st.session_state.messages.append(HumanMessage(content=user_input))
 
@@ -139,7 +168,7 @@ if user_input:
     # Extract cancer type after each user input
     extract_cancer_type(st.session_state.messages)
 
-    # If we've had 4 or more turns, or if the last question contained a "final question" marker
+    # Determine if we should generate recommendations
     last_ai_message = next((msg for msg in reversed(st.session_state.messages)
                             if isinstance(msg, AIMessage)), None)
 
@@ -147,12 +176,16 @@ if user_input:
                                                        for phrase in
                                                        ["final question", "last question", "one more question"])
 
-    enough_turns = st.session_state.turn_count >= 4  # Reduced from 5 to 4
+    enough_turns = st.session_state.turn_count >= 4
 
     if final_question_indicator or enough_turns or st.session_state.questions_complete:
         st.session_state.questions_complete = True
+
+        # Add a human-like thinking message
+        st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
+
         # Final stage: Generate drug recommendations
-        with st.spinner("Analyzing patient data and generating drug recommendations..."):
+        with st.spinner("Carefully analyzing patient information..."):
             # Extract the conversation for context
             conversation_context = ""
             for msg in st.session_state.messages:
@@ -177,8 +210,8 @@ if user_input:
 
             try:
                 # Generate the patient summary
-                with st.status("Generating treatment recommendations..."):
-                    st.write("1. Summarizing patient information")
+                with st.status("Preparing personalized recommendations..."):
+                    st.write("1. Carefully reviewing patient information")
                     patient_summary = chat_model.invoke([
                         SystemMessage(content="You are a clinical oncologist creating a precise patient summary."),
                         HumanMessage(content=summary_prompt)
@@ -187,71 +220,104 @@ if user_input:
                     # Explicitly add the cancer type to the summary for emphasis
                     enhanced_summary = f"Patient has {cancer_type}. " + patient_summary.content
 
-                    st.write("2. Retrieving FDA-approved drugs for this cancer type")
+                    st.write("2. Identifying potential treatment options")
                     # Load the drug recommendation chain (cached)
                     drug_chain = load_system()
 
-                    st.write("3. Generating final recommendation")
+                    st.write("3. Generating final personalized recommendations")
                     # Use the summary to get drug recommendations
                     recommendation = drug_chain.invoke(enhanced_summary)
 
-                # Display the recommendation
-                st.session_state.messages.append(AIMessage(content=recommendation))
-                st.chat_message("assistant").write(recommendation)
+                # Add an empathetic introduction to recommendations
+                empathetic_intro = random.choice(get_empathetic_intros())
+                final_recommendation = f"{empathetic_intro}\n\n{recommendation}"
+
+                # Add a supportive closing note
+                final_recommendation += (
+                    "\n\n💕 Remember, every patient's journey is unique. "
+                    "These recommendations are based on the latest clinical evidence, "
+                    "but always consult with your healthcare team for personalized advice."
+                )
+
+                # Display and store the recommendation
+                st.session_state.messages.append(AIMessage(content=final_recommendation))
+                st.chat_message("assistant").write(final_recommendation)
 
                 # Reset questions complete for future interactions
                 st.session_state.questions_complete = True
 
             except Exception as e:
-                error_message = f"I apologize, but I couldn't generate a drug recommendation for {cancer_type}. Please try refining your inputs."
+                error_message = (
+                    f"I apologize, but I couldn't generate a drug recommendation for {cancer_type}. "
+                    "This might be due to limited information or complexity of the case. "
+                    "Would you like to provide more details to help me understand better?"
+                )
                 st.error(f"Error: {str(e)}")
                 st.session_state.messages.append(AIMessage(content=error_message))
                 st.chat_message("assistant").write(error_message)
 
     else:
-        # Continue asking questions
-        with st.spinner("Thinking..."):
-            # Prepare a system message that guides the model to ask relevant questions
-            # and track progress toward getting all needed information
+        # Continue asking questions with a more conversational approach
+        with st.spinner("Thinking carefully..."):
+            # Add a conversational thinking pause
+            st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
+
+            # Replace the existing guidance_msg in the question generation section with this:
             guidance_msg = SystemMessage(
                 content=f"""
-                You are collecting patient information for cancer treatment recommendations.
-                This is interaction {st.session_state.turn_count} of 4.
+                Interaction {st.session_state.turn_count} of 4.
+                Current information: {extract_cancer_type(st.session_state.messages) if st.session_state.cancer_type else "Basic info"}
 
-                Information already collected: {extract_cancer_type(st.session_state.messages) if st.session_state.cancer_type else "No cancer type identified yet"}
+                Generate a BRIEF, direct question to gather ONE key piece of medical information.
 
-                Based on what has been shared so far, ask one specific question to gather critical missing information.
-                Focus on: cancer type (if not yet provided), stage, biomarkers, histology/subtype, metastasis, and treatment history.
-
-                If you've already collected substantial information (4+ data points), indicate this is your "final question" 
-                before generating recommendations.
-
-                Keep your question concise and focused - no more than 1-2 sentences.
-                Do NOT ask the user to wait or say you'll generate recommendations soon - just ask your question.
+                Constraints:
+                - Maximum 15 words
+                - Sound professional and caring
+                - Focus on critical clinical details
+                - Ensure the question is specific and actionable
                 """
             )
-
             # Add the guidance message temporarily for this response
             temp_messages = st.session_state.messages + [guidance_msg]
 
-            # Generate the next question
+            # Modify the question processing logic
             next_question_msg = chat_model.invoke(temp_messages)
             response_content = next_question_msg.content
 
-            # Check if this might be a closing message rather than a question
-            if not any(q in response_content.lower() for q in ["?", "what", "how", "could you", "can you"]):
-                # If it's not a question, force it to be one
-                response_content = f"Thank you for that information. Could you please tell me about the patient's {['cancer stage', 'treatment history', 'biomarker status', 'symptoms'][st.session_state.turn_count % 4]}?"
+            # Ensure the question is concise and ends with a question mark
+            if len(response_content) > 100:
+                response_content = response_content[:100]
 
-            # Store and display
+            if not response_content.strip().endswith('?'):
+                response_content += "?"
+
+            # If no specific question is generated, use a fallback
+            if len(response_content) < 10:
+                fallback_questions = [
+                    "What stage is the breast cancer?",
+                    "Have any specific tests been done?",
+                    "Are there any known symptoms?",
+                    "What is the patient's treatment history?"
+                ]
+                response_content = fallback_questions[st.session_state.turn_count % len(fallback_questions)]
+
+            # Remove the lengthy follow-up intros
             st.session_state.messages.append(AIMessage(content=response_content))
             st.chat_message("assistant").write(response_content)
 
+
+
+# Sidebar button to start a new conversation with a friendly reset
 if st.sidebar.button("Start New Conversation"):
     st.session_state.messages = [initial_system_msg]
     # Add a welcome message
     welcome_message = AIMessage(
-        content="Hello! I'm your oncology treatment assistant. I'll help you find the most appropriate FDA-approved treatment options. To get started, please tell me the patient's age and gender, and what type of cancer they have.")
+        content=(
+            "Hi there! 👋 Let's start fresh. "
+            "I'm ready to help find the most appropriate treatment options. "
+            "Could you tell me about the patient?"
+        )
+    )
     st.session_state.messages.append(welcome_message)
     st.session_state.turn_count = 0
     st.session_state.questions_complete = False
