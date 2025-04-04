@@ -1,13 +1,14 @@
 import streamlit as st
 import random
 from utils.config import Config
-from chain.custom_chain import DrugRecommendationChain
+from chain.custom_chain import ComprehensiveRecommendationChain
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 import re
 
-from utils.data_loader import OncologyDataLoader
+from utils.data_loader import DataLoader
+from langchain.schema import Document
 
 
 # Humanization Helper Functions
@@ -27,10 +28,10 @@ def get_thinking_phrases():
 def get_empathetic_intros():
     return [
         "Based on what you've told me, ",
-        "For this case of advanced prostate cancer, ",
         "Given the clinical details provided, ",
-        "Considering the stage of disease, ",
-        "After reviewing all the information, ",
+        "Considering your situation, ",
+        "After reviewing your information, ",
+        "Taking into account your case, ",
     ]
 
 
@@ -67,69 +68,62 @@ def get_follow_up_question_starters():
     ]
 
 
-# Initialize ChatOpenAI instance used for generating questions.
+# Initialize ChatOpenAI instance
 chat_model = ChatOpenAI(
-    temperature=0.4,  # Increased for more natural variation
+    temperature=0.4,
     model_name=Config.LLM_MODEL,
     openai_api_key=Config.OPENAI_API_KEY
 )
 
-# Define an initial system message that sets the conversation context with a more human touch
+# Define initial system message
 initial_system_msg = SystemMessage(
     content=(
-        "You are an experienced oncologist with a natural conversational style conducting a patient consultation. "
-        "Your goal is to gather a complete clinical picture through thoughtful, connected questions. "
-        "Vary your language patterns and avoid repetitive phrases like 'thank you for sharing'. "
+        "You are an experienced oncology consultant helping patients find appropriate treatments and clinical trials. "
+        "Your goal is to gather relevant information to match patients with suitable treatments and trials. "
+        "Focus on understanding the patient's condition, location preferences, and specific needs. "
         "Use medical terminology appropriately while remaining clear and compassionate. "
-        "Approach the conversation as a flowing clinical dialogue rather than a structured interview. "
-        "Reference previous information when asking follow-up questions to create continuity. "
-        "Only acknowledge information when it feels natural, not after every response. "
-        "Do not refer to yourself by name in your responses."
+        "Approach the conversation as a helpful guide rather than a structured interview. "
+        "Reference previous information when asking follow-up questions to create continuity."
     )
 )
 
-# Initialize conversation messages in session state using LangChain message objects.
+# Initialize session states
 if "messages" not in st.session_state:
     st.session_state.messages = [initial_system_msg]
-    # Add a more natural doctor welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'll be discussing potential treatment options for your case today. "
-            "To provide the most appropriate recommendations, I'll need to understand the clinical details. "
-            "Could you start by telling me about the patient's age, gender, and the type of cancer we're addressing?"
+            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
+            "that might be suitable for you. To start, could you tell me about your medical "
+            "condition and where you're located?"
         )
     )
     st.session_state.messages.append(welcome_message)
 
-# Initialize turn counter if not exists
 if "turn_count" not in st.session_state:
     st.session_state.turn_count = 0
 
-# Track if we've asked all questions
 if "questions_complete" not in st.session_state:
     st.session_state.questions_complete = False
 
-# Track discovered cancer type
 if "cancer_type" not in st.session_state:
     st.session_state.cancer_type = None
 
-# Track patient information for contextual references
 if "patient_info" not in st.session_state:
     st.session_state.patient_info = {
         "age": None,
-        "gender": None,
+        "sex": None,
         "cancer_type": None,
         "stage": None,
         "prior_treatments": [],
         "biomarkers": [],
-        "comorbidities": []
+        "comorbidities": [],
+        "location": None
     }
 
-# Track conversation flow to avoid repetitive patterns
 if "last_acknowledgment" not in st.session_state:
     st.session_state.last_acknowledgment = ""
 
-# Display the conversation history with more engaging presentation
+# Display conversation history
 for msg in st.session_state.messages:
     if isinstance(msg, HumanMessage):
         st.chat_message("user").write(msg.content)
@@ -137,84 +131,57 @@ for msg in st.session_state.messages:
         st.chat_message("assistant").write(msg.content)
 
 
-# Enhanced function to extract patient information from conversation
+def truncate_conversation_history(messages, max_messages=8):
+    if len(messages) <= max_messages + 1:
+        return messages
+    return [messages[0]] + messages[-(max_messages):]
+
+
 def extract_patient_info(messages):
-    # First, check if we already identified the cancer type
     if st.session_state.cancer_type:
         st.session_state.patient_info["cancer_type"] = st.session_state.cancer_type
         return st.session_state.patient_info
 
-    # Create a prompt to extract structured patient information
+    recent_messages = messages[-5:] if len(messages) > 5 else messages
+
     extraction_prompt = """
-    Based on the conversation, extract the following patient information. 
-    For each field, provide ONLY the value and nothing else. If a value is unknown, reply with 'Unknown'.
-
-    Format your response exactly like this:
-
-    Cancer Type: [cancer type]
-    Age: [age]
-    Gender: [gender]
-    Stage: [stage]
-    Prior Treatments: [comma-separated list]
-    Biomarkers: [comma-separated list]
-    Comorbidities: [comma-separated list]
+    Extract only the following information from the conversation. Use 'Unknown' if not found:
+    Cancer Type:
+    Stage:
+    Location:
+    Prior Treatments:
+    Treatment Response:
+    Current Status:
+    Biomarkers:
     """
 
-    # Create a temporary list of relevant messages
-    relevant_messages = []
-    for msg in messages:
-        if isinstance(msg, HumanMessage) or isinstance(msg, AIMessage):
-            relevant_messages.append(msg)
-
-    # Ask the model to extract the patient information
     try:
         result = chat_model.invoke([
             SystemMessage(content=extraction_prompt),
-            *relevant_messages
+            *recent_messages
         ])
 
-        # Parse the structured response
         info_text = result.content.strip()
 
-        # Extract cancer type
-        cancer_match = re.search(r"Cancer Type: (.+)$", info_text, re.MULTILINE)
-        if cancer_match and cancer_match.group(1).lower() != "unknown":
-            cancer_type = cancer_match.group(1).strip()
-            st.session_state.cancer_type = cancer_type
-            st.session_state.patient_info["cancer_type"] = cancer_type
+        # Extract information using regex patterns
+        patterns = {
+            "cancer_type": r"Cancer Type: (.+)$",
+            "stage": r"Stage: (.+)$",
+            "location": r"Location: (.+)$",
+            "prior_treatments": r"Prior Treatments: (.+)$",
+            "biomarkers": r"Biomarkers: (.+)$"
+        }
 
-        # Extract age
-        age_match = re.search(r"Age: (.+)$", info_text, re.MULTILINE)
-        if age_match and age_match.group(1).lower() != "unknown":
-            st.session_state.patient_info["age"] = age_match.group(1).strip()
-
-        # Extract gender
-        gender_match = re.search(r"Gender: (.+)$", info_text, re.MULTILINE)
-        if gender_match and gender_match.group(1).lower() != "unknown":
-            st.session_state.patient_info["gender"] = gender_match.group(1).strip()
-
-        # Extract stage
-        stage_match = re.search(r"Stage: (.+)$", info_text, re.MULTILINE)
-        if stage_match and stage_match.group(1).lower() != "unknown":
-            st.session_state.patient_info["stage"] = stage_match.group(1).strip()
-
-        # Extract prior treatments
-        treatments_match = re.search(r"Prior Treatments: (.+)$", info_text, re.MULTILINE)
-        if treatments_match and treatments_match.group(1).lower() != "unknown":
-            treatments = [t.strip() for t in treatments_match.group(1).split(",")]
-            st.session_state.patient_info["prior_treatments"] = treatments
-
-        # Extract biomarkers
-        biomarkers_match = re.search(r"Biomarkers: (.+)$", info_text, re.MULTILINE)
-        if biomarkers_match and biomarkers_match.group(1).lower() != "unknown":
-            biomarkers = [b.strip() for b in biomarkers_match.group(1).split(",")]
-            st.session_state.patient_info["biomarkers"] = biomarkers
-
-        # Extract comorbidities
-        comorbidities_match = re.search(r"Comorbidities: (.+)$", info_text, re.MULTILINE)
-        if comorbidities_match and comorbidities_match.group(1).lower() != "unknown":
-            comorbidities = [c.strip() for c in comorbidities_match.group(1).split(",")]
-            st.session_state.patient_info["comorbidities"] = comorbidities
+        for key, pattern in patterns.items():
+            match = re.search(pattern, info_text, re.MULTILINE)
+            if match and match.group(1).lower() != "unknown":
+                value = match.group(1).strip()
+                if key in ["prior_treatments", "biomarkers"]:
+                    st.session_state.patient_info[key] = [v.strip() for v in value.split(",")]
+                else:
+                    st.session_state.patient_info[key] = value
+                    if key == "cancer_type":
+                        st.session_state.cancer_type = value
 
         return st.session_state.patient_info
 
@@ -223,49 +190,72 @@ def extract_patient_info(messages):
         return st.session_state.patient_info
 
 
-# Load the drug recommendation chain and related system components
 @st.cache_resource
 def load_system():
-    # 1) Load documents from CSV using the OncologyDataLoader
-    documents = OncologyDataLoader(Config.CSV_PATH).load_data()
+    try:
+        # Initialize data loader with both datasets
+        loader = DataLoader(
+            trials_path="data/Active Recruiting Trials.csv",
+            oncology_path="data/oncology_survival_summaries.csv"
+        )
 
-    # 2) Create embeddings
-    embeddings = OpenAIEmbeddings(
-        model=Config.EMBEDDING_MODEL,
-        openai_api_key=Config.OPENAI_API_KEY
-    )
+        # Create embeddings
+        embeddings = OpenAIEmbeddings(
+            model=Config.EMBEDDING_MODEL,
+            openai_api_key=Config.OPENAI_API_KEY
+        )
 
-    # 3) Build the FAISS vector store
-    vector_store = FAISS.from_documents(documents, embeddings)
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        # Extract patient info for filtering
+        patient_info = st.session_state.patient_info
 
-    # 4) Initialize the LLM for drug recommendation
-    llm = ChatOpenAI(
-        temperature=0,
-        model_name=Config.LLM_MODEL,
-        openai_api_key=Config.OPENAI_API_KEY
-    )
+        # Load combined data with filters
+        all_docs = loader.load_combined_data(
+            cancer_type=patient_info.get('cancer_type'),
+            location_filter=patient_info.get('location')
+        )
 
-    # 5) Create your custom drug recommendation chain
-    drug_chain = DrugRecommendationChain(retriever, llm)
-    return drug_chain
+        if not all_docs:
+            print("Warning: No documents loaded. Check if data files exist and contain valid data.")
+            all_docs = [Document(
+                page_content="No matching data found. Please provide more specific information.",
+                metadata={'source': 'placeholder'}
+            )]
+
+        # Build the FAISS vector store
+        vector_store = FAISS.from_documents(all_docs, embeddings)
+        retriever = vector_store.as_retriever(
+            search_kwargs={"k": min(4, len(all_docs))},  # Ensure k doesn't exceed document count
+            search_type="mmr"
+        )
+
+        # Initialize the LLM
+        llm = ChatOpenAI(
+            temperature=0,
+            model_name=Config.LLM_MODEL,
+            openai_api_key=Config.OPENAI_API_KEY,
+            max_tokens=1000
+        )
+
+        # Create the comprehensive recommendation chain
+        recommendation_chain = ComprehensiveRecommendationChain(retriever, llm)
+        return recommendation_chain
+    except Exception as e:
+        print(f"Error in load_system: {str(e)}")
+        return None
 
 
-# Text input for the user's response
+# User input handling
 user_input = st.chat_input("Your response...")
 
 if user_input:
-    # Append the user's response as a HumanMessage
     st.chat_message("user").write(user_input)
     st.session_state.messages.append(HumanMessage(content=user_input))
-
-    # Increment turn count
     st.session_state.turn_count += 1
 
-    # Extract patient information after each user input
+    # Extract patient information
     extract_patient_info(st.session_state.messages)
 
-    # Determine if we should generate recommendations
+    # Check if we should generate recommendations
     last_ai_message = next((msg for msg in reversed(st.session_state.messages)
                             if isinstance(msg, AIMessage)), None)
 
@@ -278,216 +268,94 @@ if user_input:
     if final_question_indicator or enough_turns or st.session_state.questions_complete:
         st.session_state.questions_complete = True
 
-        # Add a human-like thinking message
         st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
 
-        # Final stage: Generate drug recommendations
-        with st.spinner("Analyzing clinical information..."):
-            # Extract the conversation for context
-            conversation_context = ""
-            for msg in st.session_state.messages:
-                if isinstance(msg, HumanMessage):
-                    conversation_context += f"User: {msg.content}\n"
-                elif isinstance(msg, AIMessage) and not isinstance(msg, SystemMessage):
-                    conversation_context += f"Doctor: {msg.content}\n"
-
-            # Generate a comprehensive patient summary with emphasis on cancer type
-            patient_info = extract_patient_info(st.session_state.messages)
-            cancer_type = patient_info["cancer_type"] or "Unknown cancer type"
-
-            # Create a specialized prompt that uses medical terminology
-            summary_prompt = f"""
-            Based on this consultation, create a detailed clinical summary for treatment planning.
-            The patient has been diagnosed with {cancer_type}.
-            Include all relevant clinical details mentioned such as age, gender, disease stage, prior treatments, biomarkers, comorbidities, etc.
-            Format as a concise medical assessment focusing on details relevant for treatment decision-making.
-
-            Consultation transcript:
-            {conversation_context}
-            """
-
+        with st.spinner("Analyzing treatment options and clinical trials..."):
             try:
-                # Generate the patient summary
-                with st.status("Preparing clinical recommendations..."):
-                    st.write("1. Reviewing clinical data")
-                    patient_summary = chat_model.invoke([
-                        SystemMessage(content="You are an oncologist creating a precise clinical assessment."),
-                        HumanMessage(content=summary_prompt)
-                    ])
+                recommendation_chain = load_system()
 
-                    # Explicitly add the cancer type to the summary for emphasis
-                    enhanced_summary = f"Patient has {cancer_type}. " + patient_summary.content
+                if recommendation_chain is None:
+                    raise Exception("Failed to initialize recommendation system")
 
-                    st.write("2. Evaluating evidence-based treatment options")
-                    # Load the drug recommendation chain (cached)
-                    drug_chain = load_system()
+                patient_info = extract_patient_info(st.session_state.messages)
 
-                    st.write("3. Generating personalized treatment plan")
-                    # Use the summary to get drug recommendations
-                    recommendation = drug_chain.invoke(enhanced_summary)
-
-                # Add a clinical introduction to recommendations
-                empathetic_intro = random.choice(get_empathetic_intros())
-                final_recommendation = f"{empathetic_intro}\n\n{recommendation}"
-
-                # Add a supportive closing note with a doctor's perspective
-                final_recommendation += (
-                    "\n\nIt's important to consider these recommendations in the context "
-                    "of the patient's overall health status and preferences. While these options are supported by "
-                    "clinical evidence, the final treatment decision should be made after discussion of potential "
-                    "benefits and risks with the patient."
-                    "\n\nWould you like me to elaborate on any particular aspect of the treatment plan?"
+                query = (
+                    f"Patient with {patient_info['cancer_type']} "
+                    f"stage {patient_info['stage']} "
+                    f"located in {patient_info['location']}. "
+                    f"Previous treatments: {', '.join(patient_info['prior_treatments'])}. "
+                    f"Biomarkers: {', '.join(patient_info['biomarkers'])}. "
+                    "Need both FDA-approved treatment options and clinical trials."
                 )
 
-                # Display and store the recommendation
-                st.session_state.messages.append(AIMessage(content=final_recommendation))
-                st.chat_message("assistant").write(final_recommendation)
+                recommendations = recommendation_chain.invoke(query)
 
-                # Reset questions complete for future interactions
-                st.session_state.questions_complete = True
+                st.session_state.messages.append(AIMessage(content=recommendations))
+                st.chat_message("assistant").write(recommendations)
 
             except Exception as e:
                 error_message = (
-                    f"I'm unable to formulate a complete treatment recommendation for {cancer_type} at this time. "
-                    "This may be due to insufficient clinical information or the complexity of the case. "
-                    "Could you provide additional details about the patient's disease characteristics or relevant biomarkers?"
+                    "I apologize, but I'm having trouble processing your information. "
+                    "This could be due to:\n"
+                    "1. Missing critical information about your condition\n"
+                    "2. Technical limitations in processing the data\n"
+                    "3. Connectivity issues with our knowledge base\n\n"
+                    "Please try starting a new consultation or provide more specific details about your condition."
                 )
                 st.error(f"Error: {str(e)}")
                 st.session_state.messages.append(AIMessage(content=error_message))
                 st.chat_message("assistant").write(error_message)
 
     else:
-        # Continue asking questions with a more natural doctor approach
         with st.spinner("Reviewing information..."):
-            # Add a clinical thinking pause occasionally (20% of the time)
             if random.random() < 0.2:
                 st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
 
-            # Get current patient info for context
             patient_info = extract_patient_info(st.session_state.messages)
 
-            # Create a context-aware guidance message for question generation
-            patient_context = ""
-            if patient_info["age"]:
-                patient_context += f"Patient age: {patient_info['age']}. "
-            if patient_info["gender"]:
-                patient_context += f"Patient gender: {patient_info['gender']}. "
-            if patient_info["cancer_type"]:
-                patient_context += f"Cancer type: {patient_info['cancer_type']}. "
-            if patient_info["stage"]:
-                patient_context += f"Disease stage: {patient_info['stage']}. "
-
-            # Add the prior treatments
-            if patient_info["prior_treatments"] and len(patient_info["prior_treatments"]) > 0:
-                treatments = ", ".join(patient_info["prior_treatments"])
-                if treatments.lower() != "unknown":
-                    patient_context += f"Prior treatments: {treatments}. "
+            # Create context for next question
+            patient_context = " ".join(
+                f"{key}: {value}. " for key, value in patient_info.items()
+                if value and value != [] and value != "Unknown"
+            )
 
             guidance_msg = SystemMessage(
                 content=f"""
                 Consultation step {st.session_state.turn_count} of 4.
+                Current information: {patient_context}
 
-                Current clinical information: {patient_context if patient_context else "Initial consultation"}
-
-                As an oncologist, generate your next logical question in this clinical conversation. 
-
-                Your question should:
-                1. Reference previously gathered information when appropriate
-                2. Focus on ONE critical piece of missing clinical information
-                3. Use appropriate medical terminology while remaining clear
-                4. Sound like a natural part of a doctor-patient conversation
-                5. AVOID repetitive language patterns like "thank you for sharing"
-                6. NEVER refer to yourself by name
-                7. Keep your response concise and conversational
-                8. Vary your question format - don't always use the same structure
-                9. Only acknowledge the previous response when it feels natural
-
-                DO NOT use phrases like:
-                - "Thank you for sharing"
-                - "Thank you for providing"
-                - "I appreciate you sharing"
-
-                Instead, vary your approach with:
-                - Direct questions
-                - Short acknowledgments followed by questions
-                - Questions that reference earlier information
-                - Occasional thinking out loud
-
-                Missing information to prioritize (pick ONE):
+                Generate the next logical question focusing on missing critical information:
                 - Disease stage if not known
-                - Biomarker status relevant to treatment options
+                - Biomarker status
                 - Prior treatments and response
-                - Comorbidities that might affect treatment selection
-                - Performance status or major symptoms
-                - Recent lab values or imaging results
+                - Current symptoms and status
+
+                Keep the tone professional but conversational.
+                Avoid repetitive acknowledgments.
+                Reference previous information when appropriate.
                 """
             )
 
-            # Track last interaction to avoid repetition
-            last_human_msg = next((msg for msg in reversed(st.session_state.messages)
-                                   if isinstance(msg, HumanMessage)), None)
+            temp_messages = truncate_conversation_history(st.session_state.messages + [guidance_msg])
 
-            # Add the guidance message temporarily for this response
-            temp_messages = st.session_state.messages + [guidance_msg]
-
-            # Generate the next question with context
-            next_question_msg = chat_model.invoke(temp_messages)
-            response_content = next_question_msg.content
-
-            # If no specific question is generated, use a contextual fallback
-            if len(response_content.strip()) < 10:
-                # Use patient context to create a relevant fallback
-                if not patient_info["cancer_type"]:
-                    response_content = "Could you specify the exact type and location of the cancer?"
-                elif not patient_info["stage"]:
-                    starter = random.choice(get_question_starters())
-                    response_content = f"{starter}the stage of the {patient_info['cancer_type']}?"
-                elif not patient_info["prior_treatments"] or len(patient_info["prior_treatments"]) == 0:
-                    starter = random.choice(get_question_starters())
-                    response_content = f"{starter}any previous treatments for the {patient_info['cancer_type']}?"
-                else:
-                    fallback_questions = [
-                        f"Are there any biomarker test results for this {patient_info['cancer_type']}?",
-                        "How would you describe the patient's current functional status?",
-                        "Any other health conditions we should factor into the treatment plan?",
-                        "What's most important to the patient regarding treatment goals?"
-                    ]
-                    response_content = fallback_questions[st.session_state.turn_count % len(fallback_questions)]
-
-            # Check for repetitive thank you patterns and replace if found
-            thank_you_patterns = [
-                r"thank you for sharing",
-                r"thank you for providing",
-                r"thanks for sharing",
-                r"I appreciate you sharing"
-            ]
-
-            for pattern in thank_you_patterns:
-                if re.search(pattern, response_content, re.IGNORECASE):
-                    # Replace with a more natural acknowledgment or just remove
-                    random_ack = random.choice(get_acknowledgment_phrases())
-                    response_content = re.sub(pattern, random_ack, response_content, flags=re.IGNORECASE)
-
-            # Check for self-reference by name and remove
-            response_content = re.sub(r"(?i)Dr\.\s*Carter", "", response_content)
-            response_content = re.sub(r"(?i)doctor\s*Carter", "", response_content)
+            next_question = chat_model.invoke(temp_messages)
+            response_content = next_question.content
 
             # Store and display the response
             st.session_state.messages.append(AIMessage(content=response_content))
             st.chat_message("assistant").write(response_content)
 
-# Sidebar with a more clinical framing
+# Sidebar
 st.sidebar.title("Oncology Consultation")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("Start New Consultation"):
     st.session_state.messages = [initial_system_msg]
-    # Add a welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'll be discussing potential treatment options for your case today. "
-            "To provide the most appropriate recommendations, I'll need to understand the clinical details. "
-            "Could you start by telling me about the patient's age, gender, and the type of cancer we're addressing?"
+            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
+            "that might be suitable for you. To start, could you tell me about your medical "
+            "condition and where you're located?"
         )
     )
     st.session_state.messages.append(welcome_message)
@@ -497,11 +365,12 @@ if st.sidebar.button("Start New Consultation"):
     st.session_state.last_acknowledgment = ""
     st.session_state.patient_info = {
         "age": None,
-        "gender": None,
+        "sex": None,
         "cancer_type": None,
         "stage": None,
         "prior_treatments": [],
         "biomarkers": [],
-        "comorbidities": []
+        "comorbidities": [],
+        "location": None
     }
     st.rerun()

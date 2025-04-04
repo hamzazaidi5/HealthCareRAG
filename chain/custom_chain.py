@@ -5,6 +5,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 import re
+from typing import List, Dict
+from langchain.schema import Document
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 
 
 class DrugRecommendationChain:
@@ -148,3 +152,216 @@ Please verify that:
 2. Your oncology database contains FDA-approved drugs for this condition
 
 Technical details (for developers): {str(e)}"""
+
+
+class ClinicalTrialRecommendationChain:
+    def __init__(self, retriever, llm):
+        self.retriever = retriever
+        self.llm = llm
+
+        self.trial_recommendation_prompt = PromptTemplate(
+            input_variables=["context", "question"],
+            template="""You are an AI assistant providing evidence-based clinical trial recommendations.
+            Your responses must be grounded in the provided trial data and focus on currently recruiting trials.
+
+            ### CRITICAL INSTRUCTION:
+            Ensure that all trial recommendations are SPECIFICALLY RELEVANT to the patient's:
+            1. Cancer type and stage
+            2. Location
+            3. Previous treatment history
+            4. Biomarker status (if provided)
+
+            ### Patient Information:
+            {question}
+
+            ### Retrieved Trials (use ONLY this data for recommendations):
+            {context}
+
+            ### Key Considerations for Trial Selection:
+            1️⃣ **Trial Relevance**
+               - Prioritize trials specifically targeting the patient's cancer type and mutations
+               - Consider previous treatment history in eligibility
+               - Focus on trials in the patient's location or nearby
+
+            2️⃣ **Trial Phase and Outcomes**
+               - Prioritize trials measuring overall survival when available
+               - Clearly indicate the phase of each trial
+               - Highlight innovative treatment approaches
+
+            3️⃣ **Patient Eligibility**
+               - List key inclusion/exclusion criteria
+               - Note any specific biomarker requirements
+               - Mention performance status requirements
+
+            ### Response Format:
+            - **Introduction:** Begin with "Based on your clinical profile, here are the most relevant clinical trials currently recruiting:"
+
+            - **Trial Recommendations:** For each trial (maximum 3), include:
+               - **Trial ID and Title**
+               - **Location and Site Details**
+               - **Key Eligibility Criteria**
+               - **Treatment Approach**
+               - **Phase and Primary Outcomes**
+               - **Next Steps for Enrollment**
+
+            - **Summary:** Prefixed with "💡 **KEY POINTS:**"
+               1. Why these trials were selected for you
+               2. Any specific requirements to note
+               3. Immediate next steps
+
+            - **Final Note:** End with "⚠️ IMPORTANT: Please discuss these trial options with your healthcare team to determine the most appropriate choice for your specific situation."
+
+            Keep the response focused and actionable, prioritizing trials that best match the patient's profile."""
+        )
+
+        self.chain = LLMChain(llm=llm, prompt=self.trial_recommendation_prompt)
+
+    def invoke(self, question: str) -> str:
+        try:
+            # Get relevant trials
+            docs = self.retriever.get_relevant_documents(question)[:3]
+
+            # Create concise context
+            context = "\n".join(f"Trial {i + 1}: {doc.page_content[:300]}..."
+                                for i, doc in enumerate(docs))
+
+            # Generate recommendations
+            response = self.chain.run(
+                context=context,
+                question=question
+            )
+
+            if not response or response.strip() == "":
+                return f"""Based on the provided information, I cannot find any currently recruiting clinical trials that match your specific criteria.
+
+⚠️ IMPORTANT REMINDER: Clinical trial availability changes frequently.
+
+This could be due to:
+1. Very specific cancer type or mutation requirements
+2. Location constraints
+3. Current trial recruitment status
+4. Specific eligibility criteria
+
+Next Steps:
+1. Discuss with your oncologist about other trial options
+2. Check clinicaltrials.gov for updated listings
+3. Consider expanding your search radius for more options"""
+
+            return response
+
+        except Exception as e:
+            return (
+                "I apologize, but I'm having trouble processing the clinical trials data. "
+                "Please verify:\n"
+                "1. Your location is clearly specified\n"
+                "2. Cancer type and stage are provided\n"
+                "3. Any relevant biomarkers or previous treatments are mentioned\n\n"
+                "This will help find the most appropriate trial matches for your situation."
+            )
+
+
+class ComprehensiveRecommendationChain:
+    def __init__(self, retriever, llm):
+        self.retriever = retriever
+        self.llm = llm
+
+        self.recommendation_prompt = PromptTemplate(
+            input_variables=["trials_context", "oncology_context", "question"],
+            template="""You are an AI assistant providing evidence-based oncology treatment insights.
+            Your responses must be grounded in clinical trial data and FDA-approved treatments.
+
+            ### Patient Information:
+            {question}
+
+            ### Available Clinical Trials:
+            {trials_context}
+
+            ### FDA-Approved Treatments:
+            {oncology_context}
+
+            ### CRITICAL INSTRUCTION:
+            Ensure recommendations are SPECIFICALLY RELEVANT to the patient's:
+            1. Cancer type and stage
+            2. Location
+            3. Previous treatment history
+            4. Biomarker status (if provided)
+
+            ### Response Format:
+
+            **PART 1: FDA-APPROVED TREATMENT OPTIONS**
+            - List up to 2 most relevant FDA-approved treatments
+            For each treatment:
+            * Drug Name
+            * ❗ Survival Impact: [Extends life by X months/years OR NO PROVEN SURVIVAL BENEFIT]
+            * FDA Approval Status
+            * Key Clinical Outcomes
+            * Treatment Considerations
+
+            **PART 2: RELEVANT CLINICAL TRIALS**
+            - List up to 3 most relevant recruiting trials
+            For each trial:
+            * Trial ID and Title
+            * Location and Site Details
+            * Key Eligibility Criteria
+            * Treatment Approach
+            * Phase and Primary Outcomes
+            * Next Steps for Enrollment
+
+            💡 **SUMMARY:**
+            1. Best current FDA-approved options
+            2. Most promising trial options
+            3. Suggested next steps
+
+            ⚠️ **IMPORTANT REMINDER:** Please discuss these options with your healthcare team to determine the most appropriate treatment path for your specific situation."""
+        )
+
+        self.chain = LLMChain(llm=llm, prompt=self.recommendation_prompt)
+
+    def invoke(self, question: str) -> str:
+        try:
+            # Get relevant documents
+            docs = self.retriever.get_relevant_documents(question)
+
+            if not docs:
+                return (
+                    "I apologize, but I couldn't find any relevant clinical trials or treatments "
+                    "matching your criteria. This could be because:\n"
+                    "1. The cancer type or location may need to be more specific\n"
+                    "2. There might not be any active trials in your area\n"
+                    "3. The data might need to be updated\n\n"
+                    "Please try:\n"
+                    "1. Specifying your exact cancer type and stage\n"
+                    "2. Providing your preferred location for trials\n"
+                    "3. Including any relevant biomarkers or previous treatments"
+                )
+
+            # Separate trials and oncology data
+            trials_docs = [doc for doc in docs if doc.metadata.get('source') == 'clinical_trial']
+            oncology_docs = [doc for doc in docs if doc.metadata.get('source') == 'oncology_data']
+
+            # Format contexts (use empty string if no documents found)
+            trials_context = "\n".join(
+                doc.page_content for doc in trials_docs[:3]) if trials_docs else "No matching clinical trials found."
+            oncology_context = "\n".join(doc.page_content for doc in oncology_docs[
+                                                                     :2]) if oncology_docs else "No matching FDA-approved treatments found."
+
+            # Generate recommendations
+            response = self.chain.run(
+                trials_context=trials_context,
+                oncology_context=oncology_context,
+                question=question
+            )
+
+            return response
+
+        except Exception as e:
+            print(f"Error in recommendation chain: {str(e)}")
+            return (
+                "I apologize, but I'm having trouble processing the available data. "
+                "Please ensure you've provided:\n"
+                "1. Your specific cancer type and stage\n"
+                "2. Location for trial matching\n"
+                "3. Previous treatment history\n"
+                "4. Any relevant biomarkers\n\n"
+                "This will help provide comprehensive treatment recommendations."
+            )
