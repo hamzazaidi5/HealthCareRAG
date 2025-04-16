@@ -6,6 +6,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 import re
+import pandas as pd
 
 from utils.data_loader import OncologyDataLoader
 
@@ -223,6 +224,41 @@ def extract_patient_info(messages):
         return st.session_state.patient_info
 
 
+
+def get_matching_trials(cancer_type: str, path="data/Active_Recruiting_Trials.csv") -> pd.DataFrame:
+    try:
+        # Read the CSV file
+        df = pd.read_csv(path)
+
+        # Clean up column names by stripping any leading/trailing whitespace
+        df.columns = df.columns.str.strip()
+
+        # Print the column names to debug
+        print("Columns in the DataFrame:", df.columns)
+
+        # Ensure 'Conditions' column exists
+        if 'Conditions' not in df.columns:
+            print("Error: 'Conditions' column not found.")
+            return pd.DataFrame()  # Return empty DataFrame if 'Conditions' column is missing
+
+        # Normalize user input (make it lowercase)
+        cancer_type_normalized = cancer_type.lower().strip()
+
+        # Filter rows where 'Conditions' contains exactly the cancer type and no other types (no '|')
+        # Match the cancer type exactly with no other conditions in the string (no '|')
+        filtered = df[
+            df['Conditions'].str.lower().str.contains(cancer_type_normalized, na=False) &
+            ~df['Conditions'].str.contains(r'\|', na=False)  # Exclude rows with '|' (multiple conditions)
+        ]
+
+        print(filtered, "filtered")
+        return filtered
+
+    except Exception as e:
+        print(e, "not found")
+        return pd.DataFrame()
+
+
 # Load the drug recommendation chain and related system components
 @st.cache_resource
 def load_system():
@@ -329,6 +365,28 @@ if user_input:
                 # Add a clinical introduction to recommendations
                 empathetic_intro = random.choice(get_empathetic_intros())
                 final_recommendation = f"{empathetic_intro}\n\n{recommendation}"
+
+                trials_section = ""  # Initialize the trials section string
+                trial_count = 1  # Initialize a counter for numbering the trials
+                matching_trials = get_matching_trials(cancer_type)
+                # Loop through the first 3 matching trials and add them to trials_section
+                for _, row in matching_trials.head(3).iterrows():  # Only process the first 3 trials
+                    # Format the trial information with one newline after each section (no double newlines)
+                    trials_section += (
+                         f"\n\n**Trial {trial_count}:**\n\n"  # Display the trial number (1, 2, 3, ...)
+                        f"**Cancer Type**: {row.get('Conditions', 'N/A')}\n\n"  # Cancer Type (one line break)
+                        f"**Location**: {row.get('Locations', 'No description available.')}\n\n"  # Location
+                        f"**Age**: {row.get('Age', 'N/A')}\n\n"  # Age
+                        f"**Sex**: {row.get('Sex', 'N/A')}\n\n"  # Sex
+                        f"**Start Date**: {row.get('Start Date', 'N/A')}\n\n"  # Start Date
+                        f"**Primary Completion Date**: {row.get('Primary Completion Date', 'N/A')}\n\n"  # Primary Completion Date
+                        f"**Completion Date**: {row.get('Completion Date', 'N/A')}\n\n"  # Completion Date
+                        "\n---\n"  # Separator between trials
+                    )
+                    trial_count += 1  # Increment the counter for the next trial
+
+                # Append the trials section to the final recommendation
+                final_recommendation += trials_section
 
                 # Add a supportive closing note with a doctor's perspective
                 final_recommendation += (
