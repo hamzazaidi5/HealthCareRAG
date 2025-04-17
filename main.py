@@ -95,9 +95,9 @@ if "messages" not in st.session_state:
     # Add a more natural doctor welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'll be discussing potential treatment options for your case today. "
-            "To provide the most appropriate recommendations, I'll need to understand the clinical details. "
-            "Could you start by telling me about the patient's age, gender, and the type of cancer we're addressing?"
+            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
+            "that might be suitable for you. To start, could you tell me about your medical "
+            "condition and where you're located?"
         )
     )
     st.session_state.messages.append(welcome_message)
@@ -138,14 +138,8 @@ for msg in st.session_state.messages:
         st.chat_message("assistant").write(msg.content)
 
 
-# Enhanced function to extract patient information from conversation
-def extract_patient_info(messages):
-    # First, check if we already identified the cancer type
-    if st.session_state.cancer_type:
-        st.session_state.patient_info["cancer_type"] = st.session_state.cancer_type
-        return st.session_state.patient_info
-
-    # Create a prompt to extract structured patient information
+def generate_extraction_prompt():
+    # Start with the basic structure of the extraction prompt
     extraction_prompt = """
     Based on the conversation, extract the following patient information. 
     For each field, provide ONLY the value and nothing else. If a value is unknown, reply with 'Unknown'.
@@ -160,6 +154,31 @@ def extract_patient_info(messages):
     Biomarkers: [comma-separated list]
     Comorbidities: [comma-separated list]
     """
+
+    # Add specific questions based on cancer type (dynamic)
+    if st.session_state.cancer_type:
+        if "breast" in st.session_state.cancer_type.lower():
+            extraction_prompt += "\nFor breast cancer, is it HER2+? Please mention any other biomarker statuses (e.g., ER+, PR+)."
+        elif "lung" in st.session_state.cancer_type.lower():
+            extraction_prompt += "\nFor lung cancer, has the tumor been tested for EGFR, ALK, or PD-L1 mutations?"
+        # Add other conditions here based on cancer type
+
+    return extraction_prompt
+
+
+# Update the extraction process with dynamic prompt generation
+extraction_prompt = generate_extraction_prompt()
+
+
+# Enhanced function to extract patient information from conversation
+def extract_patient_info(messages):
+    # First, check if we already identified the cancer type
+    if st.session_state.cancer_type:
+        st.session_state.patient_info["cancer_type"] = st.session_state.cancer_type
+        return st.session_state.patient_info
+
+    # Dynamically generate extraction prompt
+    extraction_prompt = generate_extraction_prompt()
 
     # Create a temporary list of relevant messages
     relevant_messages = []
@@ -222,6 +241,7 @@ def extract_patient_info(messages):
     except Exception as e:
         print(f"Error extracting patient information: {str(e)}")
         return st.session_state.patient_info
+
 
 
 
@@ -443,42 +463,48 @@ if user_input:
 
             guidance_msg = SystemMessage(
                 content=f"""
-                Consultation step {st.session_state.turn_count} of 4.
+            You are simulating a compassionate oncology specialist conducting a conversational consultation with a patient to gather key clinical information. Your tone should be supportive, knowledgeable, and patient-centered.
 
-                Current clinical information: {patient_context if patient_context else "Initial consultation"}
+            Consultation step {st.session_state.turn_count} of 4.
 
-                As an oncologist, generate your next logical question in this clinical conversation. 
+            Known patient information: {patient_context if patient_context else "Initial consultation"}
 
-                Your question should:
-                1. Reference previously gathered information when appropriate
-                2. Focus on ONE critical piece of missing clinical information
-                3. Use appropriate medical terminology while remaining clear
-                4. Sound like a natural part of a doctor-patient conversation
-                5. AVOID repetitive language patterns like "thank you for sharing"
-                6. NEVER refer to yourself by name
-                7. Keep your response concise and conversational
-                8. Vary your question format - don't always use the same structure
-                9. Only acknowledge the previous response when it feels natural
+            🎯 Objective:
+            Generate a thoughtful, natural follow-up message or question to guide the clinical intake conversation. Use the patient's previous responses as context.
 
-                DO NOT use phrases like:
-                - "Thank you for sharing"
-                - "Thank you for providing"
-                - "I appreciate you sharing"
+            🧠 Your message must:
+            1. Reference previously shared information when helpful
+            2. Ask **multiple clinically relevant follow-up questions in one message**
+            3. Prioritize gathering one or two **critical pieces of missing information** (see list below)
+            4. Sound like a human physician, with natural flow, tone, and empathy
+            5. Use professional but conversational medical language
+            6. Vary structure and sentence starters to avoid robotic repetition
 
-                Instead, vary your approach with:
-                - Direct questions
-                - Short acknowledgments followed by questions
-                - Questions that reference earlier information
-                - Occasional thinking out loud
+            ❌ Do NOT:
+            - Use robotic phrasing like “Could you share…” or “What is…”
+            - Say “Thank you for sharing” or “I appreciate your input”
+            - Ask a single short question
 
-                Missing information to prioritize (pick ONE):
-                - Disease stage if not known
-                - Biomarker status relevant to treatment options
-                - Prior treatments and response
-                - Comorbidities that might affect treatment selection
-                - Performance status or major symptoms
-                - Recent lab values or imaging results
-                """
+            ✅ Do:
+            - Use phrases like:
+              - “Just to get a clearer picture…”
+              - “Based on what you’ve shared so far…”
+              - “Before we move on, I’d like to understand...”
+              - “It might help to know…”
+
+            📌 Clinical information to collect (prioritize only 1-2 per message):
+            - Type of cancer and date of diagnosis
+            - Cancer stage and spread (metastasis, lymph node involvement)
+            - Biomarker status (e.g., PSA, HER2, EGFR)
+            - Prior treatments and patient response
+            - Comorbidities or performance status
+            - Symptoms or lab results impacting treatment
+
+            💬 Example output:
+            “Since we’re talking about stage III prostate cancer, it would be helpful to know if you’ve had any biomarker testing done — things like PSA levels or genetic mutations like BRCA. Also, have you received any treatments so far, like hormone therapy or radiation? Knowing how you responded can guide us toward the most effective options.”
+
+            Keep your message focused, warm, and inquisitive — you’re building rapport while gathering clinical info.
+            """
             )
 
             # Track last interaction to avoid repetition
@@ -543,9 +569,9 @@ if st.sidebar.button("Start New Consultation"):
     # Add a welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'll be discussing potential treatment options for your case today. "
-            "To provide the most appropriate recommendations, I'll need to understand the clinical details. "
-            "Could you start by telling me about the patient's age, gender, and the type of cancer we're addressing?"
+            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
+            "that might be suitable for you. To start, could you tell me about your medical "
+            "condition and where you're located?"
         )
     )
     st.session_state.messages.append(welcome_message)
