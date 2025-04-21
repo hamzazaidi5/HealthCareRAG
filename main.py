@@ -7,6 +7,7 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 import re
 import pandas as pd
+import os
 
 from utils.data_loader import OncologyDataLoader
 
@@ -243,41 +244,57 @@ def extract_patient_info(messages):
         return st.session_state.patient_info
 
 
-
-
-def get_matching_trials(cancer_type: str, path="data/Active_Recruiting_Trials.csv") -> pd.DataFrame:
+def get_matching_trials(cancer_type: str, path="data/Active_Recruiting_Trials.xls") -> pd.DataFrame:
     try:
-        # Read the CSV file
-        df = pd.read_csv(path)
-
-        # Clean up column names by stripping any leading/trailing whitespace
+        print(cancer_type, "cancer")
+        file_ext = os.path.splitext(path)[1].lower()
+        # Load .xls file
+        if file_ext in ['.xls', '.xlsx']:
+            df = pd.read_excel(path, engine='xlrd' if file_ext == '.xls' else 'openpyxl')
+        elif file_ext == '.csv':
+            df = pd.read_csv(path)
+        else:
+            print(f"Unsupported file format: {file_ext}")
+            return pd.DataFrame()
         df.columns = df.columns.str.strip()
 
-        # Print the column names to debug
-        print("Columns in the DataFrame:", df.columns)
-
-        # Ensure 'Conditions' column exists
         if 'Conditions' not in df.columns:
-            print("Error: 'Conditions' column not found.")
-            return pd.DataFrame()  # Return empty DataFrame if 'Conditions' column is missing
+            print("Missing required 'Conditions' column.")
+            return pd.DataFrame()
 
-        # Normalize user input (make it lowercase)
+        # Normalize input
         cancer_type_normalized = cancer_type.lower().strip()
 
-        # Filter rows where 'Conditions' contains exactly the cancer type and no other types (no '|')
-        # Match the cancer type exactly with no other conditions in the string (no '|')
-        filtered = df[
-            df['Conditions'].str.lower().str.contains(cancer_type_normalized, na=False) &
-            ~df['Conditions'].str.contains(r'\|', na=False)  # Exclude rows with '|' (multiple conditions)
-        ]
+        # Define keywords
+        solid_tumor_keywords = ["breast", "lung", "colon", "pancreas", "prostate", "liver", "gallbladder", "kidney",
+                                "ovary", "brain", "melanoma"]
+        liquid_tumors = ["leukemia", "lymphoma", "myeloma", "aml", "cll", "cml", "b-cell", "t-cell"]
+        broad_terms = {
+            "neoplasm": solid_tumor_keywords,
+            "malignant": ["advanced", "metastatic", "stage iii", "stage iv"],
+            "metastatic": ["metastatic", "advanced", "stage iii", "stage iv"],
+            "advanced": ["advanced", "stage iii", "stage iv"],
+            "hematologic": liquid_tumors,
+            "liquid tumor": liquid_tumors,
+            "solid tumor": solid_tumor_keywords,
+            "endocrine": ["pancreas", "liver", "gallbladder"],
+        }
 
-        print(filtered, "filtered")
-        return filtered
+        # Determine matching keywords
+        matched_keywords = broad_terms.get(cancer_type_normalized, [cancer_type_normalized])
+
+        # Filter rows by condition match only
+        def row_matches(row):
+            conditions = str(row['Conditions']).lower()
+            return any(kw in conditions for kw in matched_keywords)
+
+        matched_df = df[df.apply(row_matches, axis=1)]
+
+        return matched_df.reset_index(drop=True)
 
     except Exception as e:
-        print(e, "not found")
+        print("Error:", e)
         return pd.DataFrame()
-
 
 # Load the drug recommendation chain and related system components
 @st.cache_resource
