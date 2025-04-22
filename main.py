@@ -96,9 +96,9 @@ if "messages" not in st.session_state:
     # Add a more natural doctor welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
-            "that might be suitable for you. To start, could you tell me about your medical "
-            "condition and where you're located?"
+            "Hello, I'm here to help explore treatment options for your cancer diagnosis based on the latest clinical data. Would you like to tell me about your diagnosis?"
+"Before we start, I should mention that I'm designed to provide information based on clinical data, but all treatment decisions should be made with your healthcare team."
+
         )
     )
     st.session_state.messages.append(welcome_message)
@@ -246,9 +246,9 @@ def extract_patient_info(messages):
 
 def get_matching_trials(cancer_type: str, path="data/Active_Recruiting_Trials.xls") -> pd.DataFrame:
     try:
-        print(cancer_type, "cancer")
+        print("Finding trials for:", cancer_type)
         file_ext = os.path.splitext(path)[1].lower()
-        # Load .xls file
+
         if file_ext in ['.xls', '.xlsx']:
             df = pd.read_excel(path, engine='xlrd' if file_ext == '.xls' else 'openpyxl')
         elif file_ext == '.csv':
@@ -256,41 +256,40 @@ def get_matching_trials(cancer_type: str, path="data/Active_Recruiting_Trials.xl
         else:
             print(f"Unsupported file format: {file_ext}")
             return pd.DataFrame()
+
         df.columns = df.columns.str.strip()
 
         if 'Conditions' not in df.columns:
             print("Missing required 'Conditions' column.")
             return pd.DataFrame()
 
-        # Normalize input
-        cancer_type_normalized = cancer_type.lower().strip()
+        cancer_type = cancer_type.lower().strip()
 
-        # Define keywords
-        solid_tumor_keywords = ["breast", "lung", "colon", "pancreas", "prostate", "liver", "gallbladder", "kidney",
-                                "ovary", "brain", "melanoma"]
+        # Define broad match rules
+        solid_tumors = ["breast", "lung", "colon", "pancreas", "prostate", "liver", "gallbladder", "kidney",
+                        "ovary", "brain", "melanoma"]
         liquid_tumors = ["leukemia", "lymphoma", "myeloma", "aml", "cll", "cml", "b-cell", "t-cell"]
-        broad_terms = {
-            "neoplasm": solid_tumor_keywords,
+        broad_map = {
+            "neoplasm": solid_tumors,
             "malignant": ["advanced", "metastatic", "stage iii", "stage iv"],
             "metastatic": ["metastatic", "advanced", "stage iii", "stage iv"],
             "advanced": ["advanced", "stage iii", "stage iv"],
             "hematologic": liquid_tumors,
             "liquid tumor": liquid_tumors,
-            "solid tumor": solid_tumor_keywords,
+            "solid tumor": solid_tumors,
             "endocrine": ["pancreas", "liver", "gallbladder"],
         }
 
-        # Determine matching keywords
-        matched_keywords = broad_terms.get(cancer_type_normalized, [cancer_type_normalized])
+        keywords = broad_map.get(cancer_type, [cancer_type])
+        keywords = [kw.lower() for kw in keywords]
 
-        # Filter rows by condition match only
-        def row_matches(row):
-            conditions = str(row['Conditions']).lower()
-            return any(kw in conditions for kw in matched_keywords)
+        def matches_condition(cond: str):
+            cond = str(cond).lower()
+            return any(kw in cond for kw in keywords)
 
-        matched_df = df[df.apply(row_matches, axis=1)]
+        df_filtered = df[df['Conditions'].apply(matches_condition)]
 
-        return matched_df.reset_index(drop=True)
+        return df_filtered.reset_index(drop=True)
 
     except Exception as e:
         print("Error:", e)
@@ -335,7 +334,7 @@ if user_input:
     # Increment turn count
     st.session_state.turn_count += 1
 
-    # Extract patient information after each user input
+    # Extract patient information dynamically based on user input
     extract_patient_info(st.session_state.messages)
 
     # Determine if we should generate recommendations
@@ -364,11 +363,10 @@ if user_input:
                 elif isinstance(msg, AIMessage) and not isinstance(msg, SystemMessage):
                     conversation_context += f"Doctor: {msg.content}\n"
 
-            # Generate a comprehensive patient summary with emphasis on cancer type
+            # Generate a comprehensive patient summary
             patient_info = extract_patient_info(st.session_state.messages)
-            cancer_type = patient_info["cancer_type"] or "Unknown cancer type"
+            cancer_type = patient_info.get("cancer_type", "Unknown cancer type")
 
-            # Create a specialized prompt that uses medical terminology
             summary_prompt = f"""
             Based on this consultation, create a detailed clinical summary for treatment planning.
             The patient has been diagnosed with {cancer_type}.
@@ -381,23 +379,19 @@ if user_input:
 
             try:
                 # Generate the patient summary
-                with st.status("Preparing clinical recommendations..."):
-                    st.write("1. Reviewing clinical data")
-                    patient_summary = chat_model.invoke([
-                        SystemMessage(content="You are an oncologist creating a precise clinical assessment."),
-                        HumanMessage(content=summary_prompt)
-                    ])
+                patient_summary = chat_model.invoke([
+                    SystemMessage(content="You are an oncologist creating a precise clinical assessment."),
+                    HumanMessage(content=summary_prompt)
+                ])
 
-                    # Explicitly add the cancer type to the summary for emphasis
-                    enhanced_summary = f"Patient has {cancer_type}. " + patient_summary.content
+                # Explicitly add the cancer type to the summary for emphasis
+                enhanced_summary = f"Patient has {cancer_type}. " + patient_summary.content
 
-                    st.write("2. Evaluating evidence-based treatment options")
-                    # Load the drug recommendation chain (cached)
-                    drug_chain = load_system()
+                # Load the drug recommendation chain (cached)
+                drug_chain = load_system()
 
-                    st.write("3. Generating personalized treatment plan")
-                    # Use the summary to get drug recommendations
-                    recommendation = drug_chain.invoke(enhanced_summary)
+                # Use the summary to get drug recommendations
+                recommendation = drug_chain.invoke(enhanced_summary)
 
                 # Add a clinical introduction to recommendations
                 empathetic_intro = random.choice(get_empathetic_intros())
@@ -407,20 +401,19 @@ if user_input:
                 trial_count = 1  # Initialize a counter for numbering the trials
                 matching_trials = get_matching_trials(cancer_type)
                 # Loop through the first 3 matching trials and add them to trials_section
-                for _, row in matching_trials.head(3).iterrows():  # Only process the first 3 trials
-                    # Format the trial information with one newline after each section (no double newlines)
+                for _, row in matching_trials.head(3).iterrows():
                     trials_section += (
-                         f"\n\n**Trial {trial_count}:**\n\n"  # Display the trial number (1, 2, 3, ...)
-                        f"**Cancer Type**: {row.get('Conditions', 'N/A')}\n\n"  # Cancer Type (one line break)
-                        f"**Location**: {row.get('Locations', 'No description available.')}\n\n"  # Location
-                        f"**Age**: {row.get('Age', 'N/A')}\n\n"  # Age
-                        f"**Sex**: {row.get('Sex', 'N/A')}\n\n"  # Sex
-                        f"**Start Date**: {row.get('Start Date', 'N/A')}\n\n"  # Start Date
-                        f"**Primary Completion Date**: {row.get('Primary Completion Date', 'N/A')}\n\n"  # Primary Completion Date
-                        f"**Completion Date**: {row.get('Completion Date', 'N/A')}\n\n"  # Completion Date
-                        "\n---\n"  # Separator between trials
+                         f"\n\n**Trial {trial_count}:**\n\n"
+                        f"**Cancer Type**: {row.get('Conditions', 'N/A')}\n\n"
+                        f"**Location**: {row.get('Locations', 'No description available.')}\n\n"
+                        f"**Age**: {row.get('Age', 'N/A')}\n\n"
+                        f"**Sex**: {row.get('Sex', 'N/A')}\n\n"
+                        f"**Start Date**: {row.get('Start Date', 'N/A')}\n\n"
+                        f"**Primary Completion Date**: {row.get('Primary Completion Date', 'N/A')}\n\n"
+                        f"**Completion Date**: {row.get('Completion Date', 'N/A')}\n\n"
+                        "\n---\n"
                     )
-                    trial_count += 1  # Increment the counter for the next trial
+                    trial_count += 1
 
                 # Append the trials section to the final recommendation
                 final_recommendation += trials_section
@@ -443,7 +436,7 @@ if user_input:
 
             except Exception as e:
                 error_message = (
-                    f"I'm unable to formulate a complete treatment recommendation for {cancer_type} at this time. "
+                    f"I'm unable to formulate a complete treatment recommendation at this time. "
                     "This may be due to insufficient clinical information or the complexity of the case. "
                     "Could you provide additional details about the patient's disease characteristics or relevant biomarkers?"
                 )
@@ -452,132 +445,60 @@ if user_input:
                 st.chat_message("assistant").write(error_message)
 
     else:
-        # Continue asking questions with a more natural doctor approach
+        # Continue asking context-aware questions
         with st.spinner("Reviewing information..."):
-            # Add a clinical thinking pause occasionally (20% of the time)
             if random.random() < 0.2:
                 st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
 
-            # Get current patient info for context
             patient_info = extract_patient_info(st.session_state.messages)
 
-            # Create a context-aware guidance message for question generation
             patient_context = ""
-            if patient_info["age"]:
+            if patient_info.get("age"):
                 patient_context += f"Patient age: {patient_info['age']}. "
-            if patient_info["gender"]:
+            if patient_info.get("gender"):
                 patient_context += f"Patient gender: {patient_info['gender']}. "
-            if patient_info["cancer_type"]:
+            if patient_info.get("cancer_type"):
                 patient_context += f"Cancer type: {patient_info['cancer_type']}. "
-            if patient_info["stage"]:
+            if patient_info.get("stage"):
                 patient_context += f"Disease stage: {patient_info['stage']}. "
 
-            # Add the prior treatments
-            if patient_info["prior_treatments"] and len(patient_info["prior_treatments"]) > 0:
+            if patient_info.get("prior_treatments"):
                 treatments = ", ".join(patient_info["prior_treatments"])
-                if treatments.lower() != "unknown":
-                    patient_context += f"Prior treatments: {treatments}. "
+                patient_context += f"Prior treatments: {treatments}. "
 
+            # Guidance message to generate context-aware questions
             guidance_msg = SystemMessage(
                 content=f"""
-            You are simulating a compassionate oncology specialist conducting a conversational consultation with a patient to gather key clinical information. Your tone should be supportive, knowledgeable, and patient-centered.
+                Based on the information provided so far, ask insightful, clinically relevant follow-up questions. 
+                Focus on gathering the following key details:
+                - Primary Diagnosis: Cancer type, diagnosis date, stage, and metastasis status.
+                - Cancer-Specific Information: Biomarker details, such as hormone receptor status for breast cancer, EGFR/ALK/PD-L1 for lung cancer, and KRAS/BRAF/MSI for colorectal cancer.
+                - Treatment History: Previous treatments, responses, and side effects.
+                - Patient-Specific Factors: Age, comorbidities, and current medications.
 
-            Consultation step {st.session_state.turn_count} of 4.
+                After gathering these details, you can prompt the patient about clinical trials, if they’re interested, based on their specific condition. 
 
-            Known patient information: {patient_context if patient_context else "Initial consultation"}
+                Your tone should be warm, natural, and empathetic, ensuring continuity in the conversation while remaining focused on these primary areas. 
 
-            🎯 Objective:
-            Generate a thoughtful, natural follow-up message or question to guide the clinical intake conversation. Use the patient's previous responses as context.
-
-            🧠 Your message must:
-            1. Reference previously shared information when helpful
-            2. Ask **multiple clinically relevant follow-up questions in one message**
-            3. Prioritize gathering one or two **critical pieces of missing information** (see list below)
-            4. Sound like a human physician, with natural flow, tone, and empathy
-            5. Use professional but conversational medical language
-            6. Vary structure and sentence starters to avoid robotic repetition
-
-            ❌ Do NOT:
-            - Use robotic phrasing like “Could you share…” or “What is…”
-            - Say “Thank you for sharing” or “I appreciate your input”
-            - Ask a single short question
-
-            ✅ Do:
-            - Use phrases like:
-              - “Just to get a clearer picture…”
-              - “Based on what you’ve shared so far…”
-              - “Before we move on, I’d like to understand...”
-              - “It might help to know…”
-
-            📌 Clinical information to collect (prioritize only 1-2 per message):
-            - Type of cancer and date of diagnosis
-            - Cancer stage and spread (metastasis, lymph node involvement)
-            - Biomarker status (e.g., PSA, HER2, EGFR)
-            - Prior treatments and patient response
-            - Comorbidities or performance status
-            - Symptoms or lab results impacting treatment
-
-            💬 Example output:
-            “Since we’re talking about stage III prostate cancer, it would be helpful to know if you’ve had any biomarker testing done — things like PSA levels or genetic mutations like BRCA. Also, have you received any treatments so far, like hormone therapy or radiation? Knowing how you responded can guide us toward the most effective options.”
-
-            Keep your message focused, warm, and inquisitive — you’re building rapport while gathering clinical info.
-            """
+                When asking follow-up questions, be sure to refer to previous answers to avoid repetition and create a flowing clinical dialogue.
+                """
             )
 
-            # Track last interaction to avoid repetition
-            last_human_msg = next((msg for msg in reversed(st.session_state.messages)
-                                   if isinstance(msg, HumanMessage)), None)
-
-            # Add the guidance message temporarily for this response
-            temp_messages = st.session_state.messages + [guidance_msg]
-
-            # Generate the next question with context
-            next_question_msg = chat_model.invoke(temp_messages)
+            # Generate next question with patient context
+            next_question_msg = chat_model.invoke(st.session_state.messages + [guidance_msg])
             response_content = next_question_msg.content
 
-            # If no specific question is generated, use a contextual fallback
             if len(response_content.strip()) < 10:
-                # Use patient context to create a relevant fallback
-                if not patient_info["cancer_type"]:
-                    response_content = "Could you specify the exact type and location of the cancer?"
-                elif not patient_info["stage"]:
-                    starter = random.choice(get_question_starters())
-                    response_content = f"{starter}the stage of the {patient_info['cancer_type']}?"
-                elif not patient_info["prior_treatments"] or len(patient_info["prior_treatments"]) == 0:
-                    starter = random.choice(get_question_starters())
-                    response_content = f"{starter}any previous treatments for the {patient_info['cancer_type']}?"
-                else:
-                    fallback_questions = [
-                        f"Are there any biomarker test results for this {patient_info['cancer_type']}?",
-                        "How would you describe the patient's current functional status?",
-                        "Any other health conditions we should factor into the treatment plan?",
-                        "What's most important to the patient regarding treatment goals?"
-                    ]
-                    response_content = fallback_questions[st.session_state.turn_count % len(fallback_questions)]
+                # Fallback question if none is generated
+                response_content = "Could you specify the type and location of the cancer?"
 
-            # Check for repetitive thank you patterns and replace if found
-            thank_you_patterns = [
-                r"thank you for sharing",
-                r"thank you for providing",
-                r"thanks for sharing",
-                r"I appreciate you sharing"
-            ]
+            # Avoid repetitive phrases like "Thank you for sharing"
+            response_content = re.sub(r"thank you for sharing", "I appreciate your input", response_content)
 
-            for pattern in thank_you_patterns:
-                if re.search(pattern, response_content, re.IGNORECASE):
-                    # Replace with a more natural acknowledgment or just remove
-                    random_ack = random.choice(get_acknowledgment_phrases())
-                    response_content = re.sub(pattern, random_ack, response_content, flags=re.IGNORECASE)
-
-            # Check for self-reference by name and remove
-            response_content = re.sub(r"(?i)Dr\.\s*Carter", "", response_content)
-            response_content = re.sub(r"(?i)doctor\s*Carter", "", response_content)
-
-            # Store and display the response
             st.session_state.messages.append(AIMessage(content=response_content))
             st.chat_message("assistant").write(response_content)
 
-# Sidebar with a more clinical framing
+# Sidebar
 st.sidebar.title("Oncology Consultation")
 st.sidebar.markdown("---")
 
@@ -586,23 +507,13 @@ if st.sidebar.button("Start New Consultation"):
     # Add a welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello! I'm here to help you find both FDA-approved treatments and clinical trials "
-            "that might be suitable for you. To start, could you tell me about your medical "
-            "condition and where you're located?"
+            "Hello, I'm here to help explore treatment options for your cancer diagnosis based on the latest clinical data. Would you like to tell me about your diagnosis?"
+"Before we start, I should mention that I'm designed to provide information based on clinical data, but all treatment decisions should be made with your healthcare team."
+
         )
     )
     st.session_state.messages.append(welcome_message)
     st.session_state.turn_count = 0
     st.session_state.questions_complete = False
-    st.session_state.cancer_type = None
-    st.session_state.last_acknowledgment = ""
-    st.session_state.patient_info = {
-        "age": None,
-        "gender": None,
-        "cancer_type": None,
-        "stage": None,
-        "prior_treatments": [],
-        "biomarkers": [],
-        "comorbidities": []
-    }
+    st.session_state.patient_info = {}
     st.rerun()
