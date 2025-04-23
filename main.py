@@ -96,9 +96,8 @@ if "messages" not in st.session_state:
     # Add a more natural doctor welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'm here to help explore treatment options for your cancer diagnosis based on the latest clinical data. Would you like to tell me about your diagnosis?"
-"Before we start, I should mention that I'm designed to provide information based on clinical data, but all treatment decisions should be made with your healthcare team."
-
+            "Hi there, I’m designed to use AI to help you make better treatment decisions."
+        "Kindly share you age, gender and diagnosis? (If you prefer not to share details that’s ok for now)"
         )
     )
     st.session_state.messages.append(welcome_message)
@@ -345,7 +344,7 @@ if user_input:
                                                        for phrase in
                                                        ["final question", "last question", "one more question"])
 
-    enough_turns = st.session_state.turn_count >= 4
+    enough_turns = st.session_state.turn_count >= 10
 
     if final_question_indicator or enough_turns or st.session_state.questions_complete:
         st.session_state.questions_complete = True
@@ -468,20 +467,23 @@ if user_input:
 
             # Guidance message to generate context-aware questions
             guidance_msg = SystemMessage(
-                content=f"""
-                Based on the information provided so far, ask insightful, clinically relevant follow-up questions. 
-                Focus on gathering the following key details:
-                - Primary Diagnosis: Cancer type, diagnosis date, stage, and metastasis status.
-                - Cancer-Specific Information: Biomarker details, such as hormone receptor status for breast cancer, EGFR/ALK/PD-L1 for lung cancer, and KRAS/BRAF/MSI for colorectal cancer.
-                - Treatment History: Previous treatments, responses, and side effects.
-                - Patient-Specific Factors: Age, comorbidities, and current medications.
+                content="""
+            You're acting as a compassionate clinical assistant helping a cancer patient explore treatment options. 
+            Ask warm, conversational questions to gather the following information:
 
-                After gathering these details, you can prompt the patient about clinical trials, if they’re interested, based on their specific condition. 
+            1. **Basic Info**: Age, gender, primary cancer type, stage, and date of diagnosis.
+            2. **Metastasis Status**: Has the cancer spread to lymph nodes or other organs?
+            3. **Biomarker Details**: For example, ER/PR/HER2/BRCA for breast cancer; ALK, EGFR, KRAS for lung; MSI/BRAF/KRAS for colorectal.
+            4. **Treatment History**: Any chemotherapy, radiation, surgery, immunotherapy, hormonal therapy, and how they responded.
+            5. **Imaging Results**: Has any imaging shown tumor shrinkage, progression, or stability?
+            6. **Therapeutic Opportunities**: Mention that based on their inputs, additional therapeutic options can be discussed with their doctor.
+            7. **Consent for Sharing More**:
+               - Would they like to receive more information about treatment options or clinical trials via email or phone?
+            8. **Clinical Trial Interest**: Are they open to exploring clinical trials?
+            9. **Contact Info**: If they consent, ask for name, email, and phone number.
 
-                Your tone should be warm, natural, and empathetic, ensuring continuity in the conversation while remaining focused on these primary areas. 
-
-                When asking follow-up questions, be sure to refer to previous answers to avoid repetition and create a flowing clinical dialogue.
-                """
+            Keep your tone empathetic, natural, and conversational. Refer back to any previously mentioned details to maintain a coherent and patient-focused dialogue. Ask follow-up questions only where needed and avoid repeating what's already been shared.
+            """
             )
 
             # Generate next question with patient context
@@ -507,10 +509,10 @@ if st.sidebar.button("Start New Consultation"):
     # Add a welcome message
     welcome_message = AIMessage(
         content=(
-            "Hello, I'm here to help explore treatment options for your cancer diagnosis based on the latest clinical data. Would you like to tell me about your diagnosis?"
-"Before we start, I should mention that I'm designed to provide information based on clinical data, but all treatment decisions should be made with your healthcare team."
+            "Hi there, I’m designed to use AI to help you make better treatment decisions."
+        "Kindly share you age, gender and diagnosis? (If you prefer not to share details that’s ok for now)"
 
-        )
+    )
     )
     st.session_state.messages.append(welcome_message)
     st.session_state.turn_count = 0
