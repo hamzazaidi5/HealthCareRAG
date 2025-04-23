@@ -11,6 +11,46 @@ import os
 
 from utils.data_loader import OncologyDataLoader
 
+st.markdown("""
+    <style>
+    .chat-left {
+        text-align: left;
+        background-color: transparent;
+        padding: 12px;
+        border-radius: 12px;
+        margin: 10px 0;
+        color: white;
+        max-width: 70%;
+        border: 1px solid transparent;
+    }
+
+    .chat-right {
+        text-align: right;
+        background-color: #1e293b;
+        padding: 12px;
+        border-radius: 12px;
+        margin: 10px 0;
+        color: white;
+        max-width: 70%;
+        align-self: flex-end;
+        margin-left: auto;
+        border: 1px solid #334155;
+    }
+
+    .chat-wrapper {
+        display: flex;
+        flex-direction: column;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+def chat_bubble(text, sender="assistant"):
+    css_class = "chat-left" if sender == "assistant" else "chat-right"
+    st.markdown(f"""
+        <div class="chat-wrapper">
+            <div class="{css_class}">{text}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 # Humanization Helper Functions
 def get_thinking_phrases():
@@ -67,6 +107,8 @@ def get_follow_up_question_starters():
         "Is there ",
         "Have there been ",
     ]
+
+
 
 
 # Initialize ChatOpenAI instance used for generating questions.
@@ -133,9 +175,9 @@ if "last_acknowledgment" not in st.session_state:
 # Display the conversation history with more engaging presentation
 for msg in st.session_state.messages:
     if isinstance(msg, HumanMessage):
-        st.chat_message("user").write(msg.content)
+        chat_bubble(msg.content, sender="user")
     elif isinstance(msg, AIMessage):
-        st.chat_message("assistant").write(msg.content)
+        chat_bubble(msg.content, sender="assistant")
 
 
 def generate_extraction_prompt():
@@ -327,7 +369,7 @@ user_input = st.chat_input("Your response...")
 
 if user_input:
     # Append the user's response as a HumanMessage
-    st.chat_message("user").write(user_input)
+    chat_bubble(user_input, sender="user")
     st.session_state.messages.append(HumanMessage(content=user_input))
 
     # Increment turn count
@@ -350,7 +392,7 @@ if user_input:
         st.session_state.questions_complete = True
 
         # Add a human-like thinking message
-        st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
+        chat_bubble(random.choice(get_thinking_phrases()), sender="assistant")
 
         # Final stage: Generate drug recommendations
         with st.spinner("Analyzing clinical information..."):
@@ -428,7 +470,7 @@ if user_input:
 
                 # Display and store the recommendation
                 st.session_state.messages.append(AIMessage(content=final_recommendation))
-                st.chat_message("assistant").write(final_recommendation)
+                chat_bubble(final_recommendation, sender="assistant")
 
                 # Reset questions complete for future interactions
                 st.session_state.questions_complete = True
@@ -441,13 +483,14 @@ if user_input:
                 )
                 st.error(f"Error: {str(e)}")
                 st.session_state.messages.append(AIMessage(content=error_message))
-                st.chat_message("assistant").write(error_message)
+                chat_bubble(error_message, sender="assistant")
+
 
     else:
         # Continue asking context-aware questions
         with st.spinner("Reviewing information..."):
             if random.random() < 0.2:
-                st.chat_message("assistant").write(random.choice(get_thinking_phrases()))
+                chat_bubble(random.choice(get_thinking_phrases()), sender="assistant")
 
             patient_info = extract_patient_info(st.session_state.messages)
 
@@ -468,21 +511,25 @@ if user_input:
             # Guidance message to generate context-aware questions
             guidance_msg = SystemMessage(
                 content="""
-            You're acting as a compassionate clinical assistant helping a cancer patient explore treatment options. 
-            Ask warm, conversational questions to gather the following information:
+            You are a compassionate clinical assistant helping a patient navigate their prostate cancer diagnosis.
 
-            1. **Basic Info**: Age, gender, primary cancer type, stage, and date of diagnosis.
-            2. **Metastasis Status**: Has the cancer spread to lymph nodes or other organs?
-            3. **Biomarker Details**: For example, ER/PR/HER2/BRCA for breast cancer; ALK, EGFR, KRAS for lung; MSI/BRAF/KRAS for colorectal.
-            4. **Treatment History**: Any chemotherapy, radiation, surgery, immunotherapy, hormonal therapy, and how they responded.
-            5. **Imaging Results**: Has any imaging shown tumor shrinkage, progression, or stability?
-            6. **Therapeutic Opportunities**: Mention that based on their inputs, additional therapeutic options can be discussed with their doctor.
-            7. **Consent for Sharing More**:
-               - Would they like to receive more information about treatment options or clinical trials via email or phone?
-            8. **Clinical Trial Interest**: Are they open to exploring clinical trials?
-            9. **Contact Info**: If they consent, ask for name, email, and phone number.
+            Your job is to collect **structured clinical information** by asking **one empathetic, clear question at a time** — based on what has *not* yet been shared. Do **not repeat or rephrase** previous questions if they’ve been declined.
 
-            Keep your tone empathetic, natural, and conversational. Refer back to any previously mentioned details to maintain a coherent and patient-focused dialogue. Ask follow-up questions only where needed and avoid repeating what's already been shared.
+            Follow this flow:
+
+            1. **If not yet shared**, ask for: age, gender, diagnosis details (cancer type, stage, date of diagnosis).
+            2. **If not yet confirmed**, ask if the cancer has spread (metastasis) — imaging, lymph nodes, or distant organs.
+            3. **If not yet discussed**, ask if they’ve had **biomarker testing** (e.g., AR-V7, BRCA, PTEN for prostate cancer).
+            4. Then ask about **treatment history** (any past or ongoing therapies).
+            5. Then **imaging results** (shrinkage, stable, progressed).
+            6. Then ask if they are interested in learning about **clinical trials or new therapeutic options**.
+            7. Ask if they'd like to **receive more information** (email or phone).
+            8. If they consent, collect **contact details**.
+
+            Important:
+            - **Never repeat** questions that the patient has declined to answer.
+            - If they say "no" to a question, gently move on to the **next category**.
+            - Always keep a **kind, human, and non-pushy tone**.
             """
             )
 
@@ -498,7 +545,7 @@ if user_input:
             response_content = re.sub(r"thank you for sharing", "I appreciate your input", response_content)
 
             st.session_state.messages.append(AIMessage(content=response_content))
-            st.chat_message("assistant").write(response_content)
+            chat_bubble(response_content, sender="assistant")
 
 # Sidebar
 st.sidebar.title("Oncology Consultation")
